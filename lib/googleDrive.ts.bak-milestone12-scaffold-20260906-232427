@@ -1,0 +1,153 @@
+// lib/googleDrive.ts
+// Milestone 12 scaffold — Google Drive cloud provider, mirroring lib/github.ts's
+// shape. Pure fetch-based: no store or localStorage access here, so this stays
+// trivially mockable in tests (see lib/github.test.ts for the pattern to follow).
+//
+// Auth model (client-side only, no backend/secret):
+//   - Google Identity Services token client (google.accounts.oauth2.initTokenClient)
+//   - Scope: https://www.googleapis.com/auth/drive.file
+//   - CDN script: https://accounts.google.com/gsi/client
+//     NOTE: a scripted HEAD/GET check from this machine could not confirm
+//     reachability either way (likely bot/User-Agent filtering on Google's
+//     side, not a real outage) — verify by loading the URL in an actual
+//     browser before relying on this note.
+
+import type {
+  CloudCredentials,
+  CloudSettingsPayload,
+  PaperIndexEntry,
+  SavedPaper,
+  ExamMeta,
+  AppConfig,
+} from '@/types';
+
+/**
+ * Google-specific equivalent of lib/github.ts's GitHubAuthResult.
+ * NOT the same type — GitHubAuthResult is GitHub-specific and should not be
+ * reused here. Adjust fields once initTokenClient's real callback payload
+ * (and any Drive bout.get identity check) is confirmed.
+ */
+export interface GoogleAuthResult {
+  valid: boolean;
+  email?: string;
+  error?: string;
+}
+
+/**
+ * Sketch of the CloudCredentials-equivalent shape for Google, per HANDOFF.md's
+ * Milestone 12 design notes. Adjust field names once initTokenClient's actual
+ * callback payload is confirmed against the live Google Identity Services API.
+ */
+export interface GoogleCredentials {
+  accessToken: string;
+  expiresAt: number; // epoch ms
+  email: string;
+}
+
+/**
+ * Mirrors lib/github.ts's alidateGitHubToken shape for Google.
+ * TODO(Milestone 12): implement using Drive's bout.get endpoint (or
+ * Google's tokeninfo endpoint) to confirm the access token is valid.
+ */
+export async function validateGoogleToken(token: string): Promise<GoogleAuthResult> {
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(token)}`
+    );
+    if (!res.ok) {
+      let message = `Token validation failed (HTTP ${res.status})`;
+      try {
+        const errJson = await res.json();
+        if (errJson?.error_description) message = errJson.error_description;
+        else if (errJson?.error) message = errJson.error;
+      } catch {
+        // keep default message if error body isn't JSON
+      }
+      return { valid: false, error: message };
+    }
+    const data = await res.json();
+    return { valid: true, email: data.email };
+  } catch (err) {
+    return {
+      valid: false,
+      error: err instanceof Error ? err.message : 'Unknown error validating Google token',
+    };
+  }
+}
+
+/**
+ * Mirrors lib/github.ts's checkRepoAccess shape for Google.
+ * TODO(Milestone 12): implement using Drive's drive.file scope — likely just
+ * confirms the token has the expected scope rather than checking a "repo".
+ */
+export async function checkDriveAccess(token: string): Promise<GoogleAuthResult> {
+  try {
+    const res = await fetch('https://www.googleapis.com/drive/v3/about?fields=user', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      let message = `Drive access check failed (HTTP ${res.status})`;
+      try {
+        const errJson = await res.json();
+        if (errJson?.error?.message) message = errJson.error.message;
+      } catch {
+        // keep default message if error body isn't JSON
+      }
+      return { valid: false, error: message };
+    }
+    const data = await res.json();
+    return { valid: true, email: data?.user?.emailAddress };
+  } catch (err) {
+    return {
+      valid: false,
+      error: err instanceof Error ? err.message : 'Unknown error checking Drive access',
+    };
+  }
+}
+
+/**
+ * Mirrors lib/github.ts's loadCloudSettings shape for the Google Drive provider.
+ * TODO(Milestone 12): implement using the Drive REST API (drive.file scope).
+ */
+export async function loadCloudSettings(creds: CloudCredentials): Promise<CloudSettingsPayload | null> {
+  throw new Error('googleDrive.loadCloudSettings not yet implemented (Milestone 12 scaffold)');
+}
+
+/**
+ * Mirrors lib/github.ts's saveCloudSettings shape for the Google Drive provider.
+ * TODO(Milestone 12): implement using the Drive REST API (drive.file scope).
+ */
+export async function saveCloudSettings(
+  creds: CloudCredentials,
+  meta: Omit<ExamMeta, 'date' | 'dateManuallySet'>,
+  config: AppConfig
+): Promise<void> {
+  throw new Error('googleDrive.saveCloudSettings not yet implemented (Milestone 12 scaffold)');
+}
+
+/**
+ * Mirrors lib/github.ts's listCloudPapers shape for the Google Drive provider.
+ * TODO(Milestone 12): implement using the Drive REST API (drive.file scope).
+ */
+export async function listCloudPapers(creds: CloudCredentials): Promise<PaperIndexEntry[]> {
+  throw new Error('googleDrive.listCloudPapers not yet implemented (Milestone 12 scaffold)');
+}
+
+/**
+ * Mirrors lib/github.ts's loadCloudPaper shape for the Google Drive provider.
+ * TODO(Milestone 12): implement using the Drive REST API (drive.file scope).
+ */
+export async function loadCloudPaper(creds: CloudCredentials, id: string): Promise<SavedPaper | null> {
+  throw new Error('googleDrive.loadCloudPaper not yet implemented (Milestone 12 scaffold)');
+}
+
+/**
+ * Mirrors lib/github.ts's saveCloudPaper shape for the Google Drive provider.
+ * TODO(Milestone 12): implement using the Drive REST API (drive.file scope).
+ */
+export async function saveCloudPaper(
+  creds: CloudCredentials,
+  paper: Omit<SavedPaper, 'id' | 'savedAt'>
+): Promise<SavedPaper> {
+  throw new Error('googleDrive.saveCloudPaper not yet implemented (Milestone 12 scaffold)');
+}

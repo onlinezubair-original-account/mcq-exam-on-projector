@@ -9,15 +9,22 @@ describe('lib/zip', () => {
   const mockMaster: Question[] = [{ number: 1, text: 'Q1', options: [{ letter: 'A', text: 'Opt A', origLetter: 'A' }], answer: 'A' }];
   const mockSets: SetQuestion[][] = [[{ displayNumber: 1, origNumber: 1, text: 'Q1', options: [{ letter: 'A', text: 'Opt A', origLetter: 'A' }], answer: 'A' }]];
 
-  it('buildAnswerKeyCSV has correct header and comment line', () => {
-    const csv = buildAnswerKeyCSV(mockSets, mockMaster, mockConfig, 'Pharm.D, Semester 4');
-    expect(csv.split('\n')[0]).toBe('# Pharm.D; Semester 4');
-    expect(csv.split('\n')[1]).toBe('Key Letter,Question Number,Response/Mapping,Correct Marks,Incorrect Marks,Tags');
+  it('buildAnswerKeyCSV has ZipGrade-compatible header, no comment line', () => {
+    const csv = buildAnswerKeyCSV(mockSets, mockMaster, mockConfig);
+    expect(csv.split('\n')[0]).toBe('Key Letter,Question Number,Response/Mapping,Point Value,Tags');
   });
 
-  it('buildAnswerKeyCSV uses displayNumber and includes empty Tags column', () => {
-    const csv = buildAnswerKeyCSV(mockSets, mockMaster, mockConfig, 'Test');
-    expect(csv).toContain('A,1,"Q1 → A",1,0,');
+  it('buildAnswerKeyCSV uses the plain answer letter and Point Value, no [a&i] row when marksIncorrect is 0', () => {
+    const csv = buildAnswerKeyCSV(mockSets, mockMaster, mockConfig);
+    expect(csv).toContain('A,1,A,1');
+    expect(csv).not.toContain('[a&i]');
+  });
+
+  it('buildAnswerKeyCSV adds an [a&i] row per question when marksIncorrect is non-zero', () => {
+    const negConfig: AppConfig = { ...mockConfig, marksIncorrect: -0.25 };
+    const csv = buildAnswerKeyCSV(mockSets, mockMaster, negConfig);
+    expect(csv).toContain('A,1,A,1');
+    expect(csv).toContain('A,1,[a&i],-0.25');
   });
 
   it('buildQuestionPaperHTML is self-contained', () => {

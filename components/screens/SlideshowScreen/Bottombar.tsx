@@ -30,7 +30,7 @@ export function Bottombar() {
         </span>
         <button title="More questions per screen, max 5  (])" onClick={() => adjustPerSlide(1)}>Q+</button>
       </span>
-      <button title="Emergency paper backup — Milestone 6b" disabled>Print backup</button>
+      <button onClick={triggerPrint} title="Emergency paper backup (P)">Print backup</button>
       <button onClick={endExamToSetup} title="End exam and return to setup (Esc)">Back to setup</button>
       <span className={styles.hint}>
         Space=pause · ←/→=navigate · +/-=zoom · [ ]=Qs/screen · F=fullscreen · P=print backup · Esc=end

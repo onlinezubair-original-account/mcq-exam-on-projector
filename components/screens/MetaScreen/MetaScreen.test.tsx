@@ -1,13 +1,20 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MetaScreen } from './MetaScreen';
 import { useExamStore } from '@/store/examStore';
 import { DEFAULT_META } from '@/types';
 
 function resetStore() {
-  useExamStore.setState({ screen: 'meta', meta: { ...DEFAULT_META } });
+  useExamStore.setState({
+    screen: 'meta',
+    meta: { ...DEFAULT_META },
+    cloudAuth: null,
+    cloudStatus: 'idle',
+    cloudError: null,
+    cloudPapers: [],
+  });
 }
 
 describe('MetaScreen', () => {
@@ -48,5 +55,36 @@ describe('MetaScreen', () => {
     fireEvent.click(screen.getByText('Next →'));
     expect(useExamStore.getState().screen).toBe('setup');
     expect(useExamStore.getState().meta.semester).toBe(7);
+  });
+});
+
+describe('MetaScreen — cloud settings sync (Milestone 11 syncSettingsToCloud wiring)', () => {
+  const testCloudAuth = { accessToken: 'fake-access-token', expiresAt: Date.now() + 3600_000, email: 'testteacher@example.com' };
+
+  beforeEach(() => {
+    resetStore();
+    window.localStorage.clear();
+  });
+
+  it('"Next →" calls syncSettingsToCloud when signed in', async () => {
+    const syncSettingsToCloud = vi.fn().mockResolvedValue(undefined);
+    useExamStore.setState({ cloudAuth: testCloudAuth, syncSettingsToCloud });
+    render(<MetaScreen />);
+    fireEvent.click(screen.getByText('Next →'));
+    await waitFor(() => expect(syncSettingsToCloud).toHaveBeenCalledTimes(1));
+  });
+
+  it('"Skip →" does not call syncSettingsToCloud (matches commitLastSettings exclusion)', () => {
+    const syncSettingsToCloud = vi.fn().mockResolvedValue(undefined);
+    useExamStore.setState({ cloudAuth: testCloudAuth, syncSettingsToCloud });
+    render(<MetaScreen />);
+    fireEvent.click(screen.getByText('Skip →'));
+    expect(syncSettingsToCloud).not.toHaveBeenCalled();
+  });
+
+  it('"Next →" does not throw when signed out (syncSettingsToCloud no-ops)', () => {
+    render(<MetaScreen />);
+    expect(() => fireEvent.click(screen.getByText('Next →'))).not.toThrow();
+    expect(useExamStore.getState().screen).toBe('setup');
   });
 });

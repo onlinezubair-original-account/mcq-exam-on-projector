@@ -1,0 +1,87 @@
+// lib/googleDrive.ts
+// Milestone 12 scaffold — Google Drive cloud provider, mirroring lib/github.ts's
+// shape. Pure fetch-based: no store or localStorage access here, so this stays
+// trivially mockable in tests (see lib/github.test.ts for the pattern to follow).
+//
+// Auth model (client-side only, no backend/secret):
+//   - Google Identity Services token client (google.accounts.oauth2.initTokenClient)
+//   - Scope: https://www.googleapis.com/auth/drive.file
+//   - CDN script: https://accounts.google.com/gsi/client
+//     (reachability confirmed by this discovery script: NOT REACHABLE — verify network/DNS before proceeding)
+
+/**
+ * Sketch of the CloudCredentials-equivalent shape for Google, per HANDOFF.md's
+ * Milestone 12 design notes. Adjust field names once initTokenClient's actual
+ * callback payload is confirmed against the live Google Identity Services API.
+ */
+export interface GoogleCredentials {
+  accessToken: string;
+  expiresAt: number; // epoch ms
+  email: string;
+}
+
+/**
+ * Mirrors lib/github.ts's $(@{Name=validateGitHubToken; Params=token: string; ReturnType=Promise<GitHubAuthResult>}.Name) shape for the Google Drive provider.
+ * TODO(Milestone 12): implement using the Drive REST API (drive.file scope).
+ */
+export async function validateGitHubToken(token: string): Promise<GitHubAuthResult> {
+  throw new Error('googleDrive.validateGitHubToken not yet implemented (Milestone 12 scaffold)');
+}
+
+/**
+ * Mirrors lib/github.ts's $(@{Name=checkRepoAccess; Params=token: string,
+  owner: string,
+  repo: string; ReturnType=Promise<GitHubAuthResult>}.Name) shape for the Google Drive provider.
+ * TODO(Milestone 12): implement using the Drive REST API (drive.file scope).
+ */
+export async function checkRepoAccess(token: string,
+  owner: string,
+  repo: string): Promise<GitHubAuthResult> {
+  throw new Error('googleDrive.checkRepoAccess not yet implemented (Milestone 12 scaffold)');
+}
+
+/**
+ * Mirrors lib/github.ts's $(@{Name=loadCloudSettings; Params=creds: CloudCredentials; ReturnType=Promise<CloudSettingsPayload | null>}.Name) shape for the Google Drive provider.
+ * TODO(Milestone 12): implement using the Drive REST API (drive.file scope).
+ */
+export async function loadCloudSettings(creds: CloudCredentials): Promise<CloudSettingsPayload | null> {
+  throw new Error('googleDrive.loadCloudSettings not yet implemented (Milestone 12 scaffold)');
+}
+
+/**
+ * Mirrors lib/github.ts's $(@{Name=saveCloudSettings; Params=creds: CloudCredentials,
+  meta: Omit<ExamMeta, 'date' | 'dateManuallySet'>,
+  config: AppConfig; ReturnType=Promise<void>}.Name) shape for the Google Drive provider.
+ * TODO(Milestone 12): implement using the Drive REST API (drive.file scope).
+ */
+export async function saveCloudSettings(creds: CloudCredentials,
+  meta: Omit<ExamMeta, 'date' | 'dateManuallySet'>,
+  config: AppConfig): Promise<void> {
+  throw new Error('googleDrive.saveCloudSettings not yet implemented (Milestone 12 scaffold)');
+}
+
+/**
+ * Mirrors lib/github.ts's $(@{Name=listCloudPapers; Params=creds: CloudCredentials; ReturnType=Promise<PaperIndexEntry[]>}.Name) shape for the Google Drive provider.
+ * TODO(Milestone 12): implement using the Drive REST API (drive.file scope).
+ */
+export async function listCloudPapers(creds: CloudCredentials): Promise<PaperIndexEntry[]> {
+  throw new Error('googleDrive.listCloudPapers not yet implemented (Milestone 12 scaffold)');
+}
+
+/**
+ * Mirrors lib/github.ts's $(@{Name=loadCloudPaper; Params=creds: CloudCredentials, id: string; ReturnType=Promise<SavedPaper | null>}.Name) shape for the Google Drive provider.
+ * TODO(Milestone 12): implement using the Drive REST API (drive.file scope).
+ */
+export async function loadCloudPaper(creds: CloudCredentials, id: string): Promise<SavedPaper | null> {
+  throw new Error('googleDrive.loadCloudPaper not yet implemented (Milestone 12 scaffold)');
+}
+
+/**
+ * Mirrors lib/github.ts's $(@{Name=saveCloudPaper; Params=creds: CloudCredentials,
+  paper: Omit<SavedPaper, 'id' | 'savedAt'>; ReturnType=Promise<SavedPaper>}.Name) shape for the Google Drive provider.
+ * TODO(Milestone 12): implement using the Drive REST API (drive.file scope).
+ */
+export async function saveCloudPaper(creds: CloudCredentials,
+  paper: Omit<SavedPaper, 'id' | 'savedAt'>): Promise<SavedPaper> {
+  throw new Error('googleDrive.saveCloudPaper not yet implemented (Milestone 12 scaffold)');
+}

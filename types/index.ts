@@ -55,7 +55,7 @@ export interface AppConfig {
   marksIncorrect: number;
 }
 
-export type Screen = 'meta' | 'setup' | 'show' | 'end';
+export type Screen = 'meta' | 'setup' | 'locked' | 'show' | 'end';
 
 // Matches source's initial state.meta shape (mcq-projector_v8.html L594-605).
 // `date` is intentionally '' here; the Meta screen fills it with
@@ -89,3 +89,73 @@ export const DEFAULT_CONFIG: AppConfig = {
   marksCorrect: 1,
   marksIncorrect: 0,
 };
+
+// ============================================================
+// Milestone 11: Cloud sync (GitHub PAT-based, teacher-optional)
+// ============================================================
+// A teacher who opts in pastes a fine-grained GitHub Personal Access Token
+// scoped to ONE private repo (Contents: Read and write). No OAuth app, no
+// server, no secrets held anywhere but the browser. Login is fully
+// optional; without it the app behaves exactly as before (local-only).
+
+export interface CloudCredentials {
+  token: string;
+  username: string;
+  repo: string;
+}
+
+// Sticky settings synced to the cloud repo's settings.json. Deliberately
+// independent of LastSettingsMeta in lib/storage.ts (which is local-only
+// and predates this milestone) rather than importing it, so this file
+// stays the single canonical source per the project's types convention.
+export interface CloudSettingsPayload {
+  savedAt: number;
+  meta: Omit<ExamMeta, 'date' | 'dateManuallySet'>;
+  config: AppConfig;
+}
+
+// One row per paper in the cloud repo's papers/index.json — kept small so
+// listing papers is one cheap file read instead of N.
+export interface PaperIndexEntry {
+  id: string;
+  title: string;
+  savedAt: number;
+  program: string;
+  subject: string;
+  examName: string;
+  quizNumber: number | '';
+}
+
+// Full saved paper content, one file per paper at papers/<id>.json. Stores
+// the parsed question bank (pre-shuffle) + the meta/config used to build
+// it — NOT the per-set shuffles, which are regenerated at build time via
+// lib/shuffle.ts exactly like a freshly pasted bank would be.
+export interface SavedPaper {
+  id: string;
+  savedAt: number;
+  meta: ExamMeta;
+  config: AppConfig;
+  rawInput: string;
+  questions: Question[];
+}
+
+
+// ============================================================
+// Milestone 12: Google Sign-In (replaces Milestone 11 GitHub PAT flow)
+// ============================================================
+// Client-side-only OAuth via Google Identity Services' token client
+// (see lib/googleAuthConfig.ts, CloudAuthWidget.tsx). No backend, no
+// secret — the access token is short-lived (~1hr) and is never persisted
+// server-side.
+
+export interface GoogleAuthResult {
+  valid: boolean;
+  email?: string;
+  error?: string;
+}
+
+export interface GoogleCredentials {
+  accessToken: string;
+  expiresAt: number; // epoch ms
+  email: string;
+}

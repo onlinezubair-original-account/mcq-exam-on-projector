@@ -1,0 +1,308 @@
+// lib/googleDrive.ts
+// Milestone 12 — Google Drive cloud provider, functionally mirroring
+// lib/github.ts's role (settings sync + paper sync) but NOT its
+// implementation shape, because Drive has no repo/path model the way
+// GitHub's Contents API does. Drive is flat: files live in a folder and
+// are found by query (name + parent), not fetched by path. So this file
+// has its own primitives (find-or-create app folder, find-file-by-name,
+// multipart create, media PATCH update) instead of porting
+// getJsonFile/putJsonFile literally.
+//
+// Pure fetch-based: no store or localStorage access here, so this stays
+// trivially mockable in tests (see lib/googleDrive.test.ts).
+//
+// Auth model (client-side only, no backend/secret):
+//   - Google Identity Services token client (google.accounts.oauth2.initTokenClient)
+//   - Scope: https://www.googleapis.com/auth/drive.file
+//     (the app can only see/write files IT created — never the teacher's
+//     whole Drive — same minimal-scope philosophy as Milestone 11's
+//     "Contents-only, one repo" PAT guidance)
+//   - CDN script: https://accounts.google.com/gsi/client
+//
+// Data layout: one Drive folder named APP_FOLDER_NAME holds:
+//   - settings.json         (sticky meta/config, one file, update-in-place)
+//   - papers-index.json     (one row per saved paper, update-in-place)
+//   - paper-<uuid>.json     (one file per saved paper, created once, never updated)
+// This is the flat-file equivalent of Milestone 11's settings.json /
+// papers/index.json / papers/<uuid>.json layout in the GitHub repo.
+//
+// Trade-off, noted deliberately: every exported function here calls
+// ensureAppFolder() itself rather than caching a folder ID across calls
+// (this file has no persistent state by design — see file header). For a
+// single-teacher classroom laptop doing occasional saves, the extra
+// find-or-create round trip per call is an acceptable cost for staying
+// stateless and trivially testable; revisit only if usage patterns show
+// this mattering in practice.
+
+import type {
+  CloudSettingsPayload,
+  PaperIndexEntry,
+  SavedPaper,
+  ExamMeta,
+  AppConfig,
+} from '@/types';
+
+const DRIVE_API = 'https://www.googleapis.com/drive/v3';
+const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
+const APP_FOLDER_NAME = 'MCQ Projector Data';
+
+/**
+ * Google-specific equivalent of lib/github.ts's GitHubAuthResult.
+ * NOT the same type — GitHubAuthResult is GitHub-specific and is not
+ * reused here. Field names reflect Google's tokeninfo / Drive "about"
+ * responses.
+ */
+export interface GoogleAuthResult {
+  valid: boolean;
+  email?: string;
+  error?: string;
+}
+
+/**
+ * The CloudCredentials-equivalent shape for Google. Deliberately NOT the
+ * GitHub-shaped CloudCredentials type from '@/types' ({ token, username,
+ * repo }) — Google has no username/repo concept, just a bearer access
+ * token. Every function in this file takes GoogleCredentials, not
+ * CloudCredentials.
+ */
+export interface GoogleCredentials {
+  accessToken: string;
+  expiresAt: number; // epoch ms
+  email: string;
+}
+
+function authHeaders(token: string): HeadersInit {
+  return { Authorization: `Bearer ${token}` };
+}
+
+function generatePaperId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `paper-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// ---- Login-time checks (implemented previously, unchanged) ---------------
+
+export async function validateGoogleToken(token: string): Promise<GoogleAuthResult> {
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(token)}`
+    );
+    if (!res.ok) {
+      let message = `Token validation failed (HTTP ${res.status})`;
+      try {
+        const errJson = await res.json();
+        if (errJson?.error_description) message = errJson.error_description;
+        else if (errJson?.error) message = errJson.error;
+      } catch {
+        // keep default message if error body isn't JSON
+      }
+      return { valid: false, error: message };
+    }
+    const data = await res.json();
+    return { valid: true, email: data.email };
+  } catch (err) {
+    return {
+      valid: false,
+      error: err instanceof Error ? err.message : 'Unknown error validating Google token',
+    };
+  }
+}
+
+export async function checkDriveAccess(token: string): Promise<GoogleAuthResult> {
+  try {
+    const res = await fetch('https://www.googleapis.com/drive/v3/about?fields=user', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      let message = `Drive access check failed (HTTP ${res.status})`;
+      try {
+        const errJson = await res.json();
+        if (errJson?.error?.message) message = errJson.error.message;
+      } catch {
+        // keep default message if error body isn't JSON
+      }
+      return { valid: false, error: message };
+    }
+    const data = await res.json();
+    return { valid: true, email: data?.user?.emailAddress };
+  } catch (err) {
+    return {
+      valid: false,
+      error: err instanceof Error ? err.message : 'Unknown error checking Drive access',
+    };
+  }
+}
+
+// ---- Low-level Drive primitives -------------------------------------------
+
+async function findFolder(token: string): Promise<string | null> {
+  const q = encodeURIComponent(
+    `name='${APP_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
+  );
+  const res = await fetch(`${DRIVE_API}/files?q=${q}&fields=files(id,name)`, {
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error(`Drive API error listing app folder (${res.status}).`);
+  const data = (await res.json()) as { files?: { id: string }[] };
+  return data.files?.[0]?.id ?? null;
+}
+
+async function createFolder(token: string): Promise<string> {
+  const res = await fetch(`${DRIVE_API}/files`, {
+    method: 'POST',
+    headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: APP_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' }),
+  });
+  if (!res.ok) throw new Error(`Drive API error creating app folder (${res.status}).`);
+  const data = (await res.json()) as { id: string };
+  return data.id;
+}
+
+async function ensureAppFolder(token: string): Promise<string> {
+  const existing = await findFolder(token);
+  if (existing) return existing;
+  return createFolder(token);
+}
+
+async function findFileByName(token: string, folderId: string, name: string): Promise<string | null> {
+  const q = encodeURIComponent(`name='${name}' and '${folderId}' in parents and trashed=false`);
+  const res = await fetch(`${DRIVE_API}/files?q=${q}&fields=files(id,name)`, {
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error(`Drive API error finding ${name} (${res.status}).`);
+  const data = (await res.json()) as { files?: { id: string }[] };
+  return data.files?.[0]?.id ?? null;
+}
+
+async function readJsonFile<T>(token: string, fileId: string): Promise<T> {
+  const res = await fetch(`${DRIVE_API}/files/${fileId}?alt=media`, {
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error(`Drive API error reading file ${fileId} (${res.status}).`);
+  return (await res.json()) as T;
+}
+
+/** Find-then-read in one call, returning both the file ID (for later
+ * updates) and its parsed content, or null if the file doesn't exist yet. */
+async function readNamedFile<T>(
+  token: string,
+  folderId: string,
+  name: string
+): Promise<{ id: string; data: T } | null> {
+  const id = await findFileByName(token, folderId, name);
+  if (!id) return null;
+  const data = await readJsonFile<T>(token, id);
+  return { id, data };
+}
+
+async function createJsonFile(token: string, folderId: string, name: string, data: unknown): Promise<string> {
+  const boundary = 'mcqprojector-boundary';
+  const metadata = { name, parents: [folderId], mimeType: 'application/json' };
+  const body =
+    `--${boundary}\r\n` +
+    `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+    `${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\n` +
+    `Content-Type: application/json\r\n\r\n` +
+    `${JSON.stringify(data)}\r\n` +
+    `--${boundary}--`;
+
+  const res = await fetch(`${DRIVE_UPLOAD_API}/files?uploadType=multipart&fields=id`, {
+    method: 'POST',
+    headers: { ...authHeaders(token), 'Content-Type': `multipart/related; boundary=${boundary}` },
+    body,
+  });
+  if (!res.ok) throw new Error(`Drive API error creating file ${name} (${res.status}).`);
+  const json = (await res.json()) as { id: string };
+  return json.id;
+}
+
+async function updateJsonFile(token: string, fileId: string, data: unknown): Promise<void> {
+  const res = await fetch(`${DRIVE_UPLOAD_API}/files/${fileId}?uploadType=media`, {
+    method: 'PATCH',
+    headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`Drive API error updating file ${fileId} (${res.status}).`);
+}
+
+/** Create if `existingId` is absent, else update in place. Returns the
+ * (possibly new) file ID. */
+async function writeNamedFile(
+  token: string,
+  folderId: string,
+  name: string,
+  data: unknown,
+  existingId?: string
+): Promise<string> {
+  if (existingId) {
+    await updateJsonFile(token, existingId, data);
+    return existingId;
+  }
+  return createJsonFile(token, folderId, name, data);
+}
+
+// ---- Settings sync ----------------------------------------------------
+
+export async function loadCloudSettings(creds: GoogleCredentials): Promise<CloudSettingsPayload | null> {
+  const folderId = await ensureAppFolder(creds.accessToken);
+  const existing = await readNamedFile<CloudSettingsPayload>(creds.accessToken, folderId, 'settings.json');
+  return existing?.data ?? null;
+}
+
+export async function saveCloudSettings(
+  creds: GoogleCredentials,
+  meta: Omit<ExamMeta, 'date' | 'dateManuallySet'>,
+  config: AppConfig
+): Promise<void> {
+  const folderId = await ensureAppFolder(creds.accessToken);
+  const existingId = await findFileByName(creds.accessToken, folderId, 'settings.json');
+  const payload: CloudSettingsPayload = { savedAt: Date.now(), meta, config };
+  await writeNamedFile(creds.accessToken, folderId, 'settings.json', payload, existingId ?? undefined);
+}
+
+// ---- Paper sync ------------------------------------------------------------
+
+export async function listCloudPapers(creds: GoogleCredentials): Promise<PaperIndexEntry[]> {
+  const folderId = await ensureAppFolder(creds.accessToken);
+  const existing = await readNamedFile<PaperIndexEntry[]>(creds.accessToken, folderId, 'papers-index.json');
+  return existing?.data ?? [];
+}
+
+export async function loadCloudPaper(creds: GoogleCredentials, id: string): Promise<SavedPaper | null> {
+  const folderId = await ensureAppFolder(creds.accessToken);
+  const existing = await readNamedFile<SavedPaper>(creds.accessToken, folderId, `paper-${id}.json`);
+  return existing?.data ?? null;
+}
+
+export async function saveCloudPaper(
+  creds: GoogleCredentials,
+  paper: Omit<SavedPaper, 'id' | 'savedAt'>
+): Promise<SavedPaper> {
+  const folderId = await ensureAppFolder(creds.accessToken);
+  const id = generatePaperId();
+  const savedAt = Date.now();
+  const fullPaper: SavedPaper = { ...paper, id, savedAt };
+
+  // Fresh UUID filename — always a create, never an update.
+  await createJsonFile(creds.accessToken, folderId, `paper-${id}.json`, fullPaper);
+
+  const existingIndex = await readNamedFile<PaperIndexEntry[]>(creds.accessToken, folderId, 'papers-index.json');
+  const index = existingIndex?.data ?? [];
+  const entry: PaperIndexEntry = {
+    id,
+    savedAt,
+    title: paper.meta.examName || 'Untitled paper',
+    program: paper.meta.program,
+    subject: paper.meta.subject,
+    examName: paper.meta.examName,
+    quizNumber: paper.meta.quizNumber,
+  };
+  const newIndex = [entry, ...index];
+
+  await writeNamedFile(creds.accessToken, folderId, 'papers-index.json', newIndex, existingIndex?.id);
+
+  return fullPaper;
+}

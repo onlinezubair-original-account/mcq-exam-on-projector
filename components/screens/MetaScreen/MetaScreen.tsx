@@ -11,6 +11,7 @@ import { SubjectBrowse } from '@/components/subject-lookup/SubjectBrowse';
 import { SubjectSearch } from '@/components/subject-lookup/SubjectSearch';
 import subjStyles from '@/components/subject-lookup/SubjectLookup.module.css';
 import styles from './MetaScreen.module.css';
+import { CloudAuthWidget } from '@/components/CloudAuthWidget';
 
 // Exam Metadata screen — source: #meta (mcq-projector_v8.html L337-420),
 // wiring in L1032-1056. Behavior-identical port: same fields, same
@@ -21,6 +22,7 @@ export function MetaScreen() {
   const setScreen = useExamStore((s) => s.setScreen);
   const setMetaInStore = useExamStore((s) => s.setMeta);
   const storedMeta = useExamStore((s) => s.meta);
+  const syncSettingsToCloud = useExamStore((s) => s.syncSettingsToCloud);
 
   const [program, setProgram] = useState(storedMeta.program || 'Pharm.D');
   const [semester, setSemester] = useState<number | ''>(storedMeta.semester || 4);
@@ -83,6 +85,12 @@ export function MetaScreen() {
     setMetaInStore(meta);
     // Source L1039: saveLastSettings() fires only from "Next ->".
     commitLastSettings(meta);
+    // Milestone 11: push the same sticky settings to the cloud repo, if
+    // signed in. No-ops internally (via a cloudAuth check inside the
+    // action) when signed out. Deliberately fire-and-forget, matching the
+    // loadSettingsFromCloud()/refreshCloudPapers() pattern already used in
+    // ExamApp.tsx's mount effect, so this click never blocks on network.
+    void syncSettingsToCloud();
     setScreen('setup');
   }
 
@@ -106,6 +114,7 @@ export function MetaScreen() {
   return (
     <div className={styles.screen}>
       <div className={styles.card}>
+        <CloudAuthWidget />
         <h1 className={styles.title}>Exam details</h1>
         <p className={styles.sub}>
           Optional — fill in whatever applies, or skip straight to pasting questions.

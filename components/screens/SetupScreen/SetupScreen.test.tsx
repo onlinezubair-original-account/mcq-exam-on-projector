@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { SetupScreen } from './SetupScreen';
 import { useExamStore } from '@/store/examStore';
 import { DEFAULT_META, DEFAULT_CONFIG } from '@/types';
@@ -54,11 +54,116 @@ describe('SetupScreen', () => {
     expect(screen.getByLabelText('3. Questions per screen')).toHaveValue(3);
   });
 
-  it('Build slideshow with the sample loaded parses questions and advances to "show"', () => {
+  it('Build slideshow with the sample loaded parses questions and advances to "locked"', () => {
     render(<SetupScreen />);
     fireEvent.click(screen.getByText('Load a sample to see the format →'));
     fireEvent.click(screen.getByText('Build slideshow →'));
-    expect(useExamStore.getState().screen).toBe('show');
+    expect(useExamStore.getState().screen).toBe('locked');
     expect(useExamStore.getState().pendingQuestions.length).toBe(4);
+    expect(useExamStore.getState().lockedSets.length).toBe(2);
+    expect(useExamStore.getState().lockedMasterQuestions.length).toBe(4);
+  });
+});
+
+describe('SetupScreen — cloud save/load (Milestone 11 Script 5+)', () => {
+  const testCloudAuth = { accessToken: 'fake-access-token', expiresAt: Date.now() + 3600_000, email: 'testteacher@example.com' };
+
+  beforeEach(() => {
+    resetStore();
+    useExamStore.setState({
+      cloudAuth: null,
+      cloudStatus: 'idle',
+      cloudError: null,
+      cloudPapers: [],
+    });
+  });
+
+  it('does not show cloud controls when signed out', () => {
+    render(<SetupScreen />);
+    expect(screen.queryByText(/save to cloud/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/load from cloud/i)).not.toBeInTheDocument();
+  });
+
+  it('shows cloud controls when signed in', () => {
+    useExamStore.setState({ cloudAuth: testCloudAuth });
+    render(<SetupScreen />);
+    expect(screen.getByText(/save to cloud/i)).toBeInTheDocument();
+    expect(screen.getByText(/load from cloud/i)).toBeInTheDocument();
+  });
+
+  it('"Save to cloud" parses the current input and calls savePaperToCloud', async () => {
+    const savePaperToCloud = vi.fn().mockResolvedValue(undefined);
+    useExamStore.setState({ cloudAuth: testCloudAuth, savePaperToCloud });
+    render(<SetupScreen />);
+    fireEvent.click(screen.getByText('Load a sample to see the format →'));
+    fireEvent.click(screen.getByText(/save to cloud/i));
+    await waitFor(() => expect(savePaperToCloud).toHaveBeenCalledTimes(1));
+    expect(useExamStore.getState().pendingQuestions.length).toBe(4);
+  });
+
+  it('"Save to cloud" shows an error and does not call savePaperToCloud when input is empty', async () => {
+    const savePaperToCloud = vi.fn().mockResolvedValue(undefined);
+    useExamStore.setState({ cloudAuth: testCloudAuth, savePaperToCloud });
+    render(<SetupScreen />);
+    fireEvent.click(screen.getByText(/save to cloud/i));
+    expect(await screen.findByText(/nothing to save/i)).toBeInTheDocument();
+    expect(savePaperToCloud).not.toHaveBeenCalled();
+  });
+
+  it('"Load from cloud" refreshes the paper list and shows entries', async () => {
+    const refreshCloudPapers = vi.fn().mockImplementation(async () => {
+      useExamStore.setState({
+        cloudPapers: [
+          { id: 'p1', savedAt: Date.now(), title: 'Midterm', program: 'BSCS', subject: 'OS', examName: 'Midterm', quizNumber: '' },
+        ],
+      });
+    });
+    useExamStore.setState({ cloudAuth: testCloudAuth, refreshCloudPapers });
+    render(<SetupScreen />);
+    fireEvent.click(screen.getByText(/load from cloud/i));
+    await waitFor(() => expect(refreshCloudPapers).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('Midterm')).toBeInTheDocument();
+  });
+
+  it('clicking a listed paper calls loadPaperFromCloud and syncs the local fields', async () => {
+    const loadPaperFromCloud = vi.fn().mockImplementation(async () => {
+      const current = useExamStore.getState();
+      useExamStore.setState({
+        rawInput: 'loaded raw input',
+        pendingQuestions: [],
+        meta: { ...current.meta, examName: 'Loaded Exam' },
+        config: { ...current.config, numSets: 3, perSlide: 2 },
+      });
+    });
+    useExamStore.setState({
+      cloudAuth: testCloudAuth,
+      loadPaperFromCloud,
+      refreshCloudPapers: vi.fn().mockResolvedValue(undefined),
+      cloudPapers: [
+        { id: 'p1', savedAt: Date.now(), title: 'Midterm', program: 'BSCS', subject: 'OS', examName: 'Midterm', quizNumber: '' },
+      ],
+    });
+    render(<SetupScreen />);
+    fireEvent.click(screen.getByText(/load from cloud/i));
+    fireEvent.click(await screen.findByText('Load'));
+    await waitFor(() => expect(loadPaperFromCloud).toHaveBeenCalledWith('p1'));
+    expect(await screen.findByLabelText('1. Paste your questions')).toHaveValue('loaded raw input');
+    expect(screen.getByLabelText('5. Number of scrambled sets')).toHaveValue('3');
+  });
+
+  it('"Build slideshow →" calls syncSettingsToCloud when signed in', async () => {
+    const syncSettingsToCloud = vi.fn().mockResolvedValue(undefined);
+    useExamStore.setState({ cloudAuth: testCloudAuth, syncSettingsToCloud });
+    render(<SetupScreen />);
+    fireEvent.click(screen.getByText('Load a sample to see the format →'));
+    fireEvent.click(screen.getByText('Build slideshow →'));
+    await waitFor(() => expect(syncSettingsToCloud).toHaveBeenCalledTimes(1));
+  });
+
+  it('"Build slideshow →" does not throw when signed out (syncSettingsToCloud no-ops)', () => {
+    render(<SetupScreen />);
+    fireEvent.click(screen.getByText('Load a sample to see the format →'));
+    expect(() => fireEvent.click(screen.getByText('Build slideshow →'))).not.toThrow();
+    expect(useExamStore.getState().screen).toBe('locked');
   });
 });

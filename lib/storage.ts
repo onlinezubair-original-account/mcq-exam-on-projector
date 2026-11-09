@@ -97,3 +97,49 @@ export function writeLastSettings(payload: LastSettingsPayload): void {
     // no-op
   }
 }
+// ---- Cloud credentials (Milestone 12 — Google Sign-In) --------------------
+// Cached locally exactly like AUTOSAVE_KEY/LAST_SETTINGS_KEY above. NOTE:
+// the Google access token is stored in plaintext in localStorage — same
+// trust model as the rest of this single-machine classroom app. Unlike the
+// Milestone 11 GitHub PAT (which had no expiry), Google's implicit-flow
+// access token expires after roughly one hour and is never silently
+// refreshed, so callers must check `expiresAt` and prompt a fresh sign-in
+// when stale (see store/examStore.ts's initCloudAuth()).
+//
+// Key bumped from v1 to v2: the v1 key held GitHub-shaped credentials
+// ({ token, username, repo }), which would otherwise silently misparse as
+// GoogleCredentials ({ accessToken, expiresAt, email }) if a teacher's
+// browser still had a v1 value cached from before this migration.
+import type { GoogleCredentials } from '@/types';
+
+export const CLOUD_AUTH_KEY = 'mcqProjectorCloudAuth_v2';
+
+export function readCloudAuth(): GoogleCredentials | null {
+  if (!isBrowser()) return null;
+  try {
+    const raw = window.localStorage.getItem(CLOUD_AUTH_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as GoogleCredentials;
+  } catch {
+    return null;
+  }
+}
+
+export function writeCloudAuth(creds: GoogleCredentials): void {
+  if (!isBrowser()) return;
+  try {
+    window.localStorage.setItem(CLOUD_AUTH_KEY, JSON.stringify(creds));
+  } catch {
+    // Storage unavailable/full — fail silently, matching this file's
+    // existing read/write functions.
+  }
+}
+
+export function clearCloudAuthStorage(): void {
+  if (!isBrowser()) return;
+  try {
+    window.localStorage.removeItem(CLOUD_AUTH_KEY);
+  } catch {
+    // no-op
+  }
+}

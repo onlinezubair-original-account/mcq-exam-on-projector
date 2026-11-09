@@ -7,6 +7,7 @@ import { PrintArea } from './PrintArea';
 import { EndScreen } from './screens/EndScreen/EndScreen';
 import { MetaScreen } from './screens/MetaScreen/MetaScreen';
 import { SetupScreen } from './screens/SetupScreen/SetupScreen';
+import { LockedScreen } from './screens/LockedScreen/LockedScreen';
 import { SlideshowScreen } from './screens/SlideshowScreen/SlideshowScreen';
 
 export function ExamApp() {
@@ -20,6 +21,11 @@ export function ExamApp() {
   useEffect(() => {
     loadLastSettings();
     checkAutosave();
+    useExamStore.getState().initCloudAuth();
+    if (useExamStore.getState().cloudAuth) {
+      void useExamStore.getState().loadSettingsFromCloud();
+      void useExamStore.getState().refreshCloudPapers();
+    }
   }, []);
 
   let screenSwitch;
@@ -34,6 +40,9 @@ export function ExamApp() {
           <ResumeBanner />
         </>
       );
+      break;
+    case 'locked':
+      screenSwitch = <LockedScreen />;
       break;
     case 'show':
       screenSwitch = <SlideshowScreen />;

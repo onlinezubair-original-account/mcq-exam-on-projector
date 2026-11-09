@@ -1,0 +1,543 @@
+# MCQ Projector — Handoff Document
+
+Rebuild of the single-file `mcq-projector_v8.html` (~2,100-line vanilla HTML/JS
+classroom MCQ projector tool) as a typed, componentized Next.js (App Router) +
+Zustand + TypeScript application, static-exported (`output: 'export'`) for
+local/offline use via `npx serve out`.
+
+## Tech stack
+- Next.js 16 (App Router, static export), React 19, TypeScript 5 (strict)
+- Zustand 5 for app state (single store: `store/examStore.ts`)
+- Vitest + Testing Library + jsdom for tests
+- fflate for ZIP generation (answer-key export)
+- No CSS framework — CSS Modules per component
+
+## Status: Milestones 1–8 complete, build GREEN. Milestone 9 (Manual QA) next.
+
+Two latent wiring bugs were found and fixed during Milestone 9 QA — see
+"Post-Milestone-9 fixes" below. The table status below reflects the
+original Milestone 8 sign-off; treat it alongside that section, not in
+isolation.
+
+| Milestone | Scope | Status |
+|---|---|---|
+| 1 | Next.js scaffold, Zustand, theme | Done |
+| 2 | Types + lib ports (parser, shuffle, courses, meta) | Done |
+| 3 | Meta / Setup screens | Done |
+| 4 | Setup screen, demo questions, AI prompt helper | Done |
+| 5 | Slideshow screen: calibration mode | Done |
+| 6a | Real exam timer (countdown, beeps, pause) | Done |
+| 6b | Keyboard shortcuts, fullscreen, beforeunload guard | Done |
+| 7 | Persistence: autosave, last-used settings, resume banner | Done (see fixes below — init call was missing) |
+| 8 | EndScreen (answer key + ZIP/CSV export), Print Backup overlay, wired 'P' key | Done — build verified green (`npm run test` + `npm run build`) (see fixes below — 'P' key was NOT actually wired) |
+| 9 | Manual QA pass (serve `out`, click through full flow) | **In progress** |
+
+## Confirmed deviations from the plan doc
+- `types/index.ts` is the single canonical source for `ExamMeta`, `AppConfig`,
+  `Question`, `SetQuestion`, `Course` (re-exported from `lib/courses.ts`),
+  `Screen`, `DEFAULT_META`, `DEFAULT_CONFIG`. No other file should ever declare
+  its own local `ExamMeta`/`AppConfig` interface — always `import type { ... }
+  from '@/types'` (or relative `../types` inside `lib/`). This was the root
+  cause of the Milestone 8 build break (a stale local `ExamMeta` shape in a
+  test file, not in `lib/meta.ts` itself as originally suspected — confirmed
+  by direct file discovery, see "Milestone 8 postmortem" below).
+- `ExamMeta.semester` and `ExamMeta.quizNumber` are typed `number | ''`, not
+  `string`. Any mock/test data must use numeric literals (or `''`), never
+  string numbers like `"4"` or `"3"`.
+- ~~`'P'` (print backup) was deliberately left unwired in `useKeyboardShortcuts.ts`
+  until Milestone 8, since `usePrintBackup`/`PrintArea` didn't exist before then.~~
+  Superseded — see "Post-Milestone-9 fixes" below. `usePrintBackup`/`PrintArea`
+  were built during Milestone 8, but the key wiring itself was never revisited
+  and the stale "not wired yet" comment stayed in the file uncorrected.
+- Escape has no fullscreen-aware double-press behavior — confirmed directly
+  against `mcq-projector_v8.html` source, not just the plan doc. It always
+  calls `endExamToSetup()` unconditionally.
+
+## Milestone 8 postmortem (for future AI sessions)
+A prior session's PowerShell `-replace` regex fixes to TSX files caused a
+build break. On fresh discovery, most of the originally-reported issues were
+already correctly fixed in the live files (`Bottombar.tsx` imports/destructuring,
+`EndScreen.tsx`'s `Blob` cast, `zip.test.ts`'s `origLetter` mock field). The
+one real remaining bug was `lib/meta.test.ts` importing `type ExamMeta` from
+`./meta` (never exported there) instead of `../types`, plus an incomplete
+`emptyMeta()` test helper missing `subjectFullName`/`subjectMode`/
+`dateManuallySet`, and two tests passing `quizNumber` as a string. Fixed by
+rewriting `lib/meta.test.ts` in full (not patched via regex). **Lesson:
+always re-discover actual file content before trusting a prior session's
+error report or automation-log summary — they can be stale or already
+resolved.**
+
+## Post-Milestone-9 fixes (2026-09-06)
+
+Manual QA surfaced two real bugs the Milestone 7/8 "Done" status did not
+catch, both now fixed and verified (`tsc --noEmit` + `npm run test`, both
+passing):
+
+1. **`loadLastSettings()`/`checkAutosave()` never invoked.** Both were fully
+   implemented in `store/persistence.ts` (and covered by
+   `persistence.test.ts`) but nothing ever called them — there was no
+   mount-time equivalent of source's `loadLastSettings(); checkAutosave();`
+   (v8 source L2125-2126). Fixed by calling both, in that order, in a
+   `useEffect(() => { ... }, [])` in `components/ExamApp.tsx`, matching the
+   plan doc's §8 ordering requirement (last-used settings first, autosave
+   check second, so a recoverable session still wins).
+2. **`P` key (print backup) still unwired.** `hooks/useKeyboardShortcuts.ts`
+   still carried the Milestone-8-era comment stating it was intentionally
+   left unwired until `usePrintBackup`/`PrintArea` existed — but both had
+   since been built and were already wired everywhere else (`EndScreen.tsx`,
+   `Bottombar.tsx`). Fixed by wiring `usePrintBackup()` into the hook's
+   keydown handler, matching source's `if (e.key.toLowerCase() === 'p'){
+   e.preventDefault(); printBackup(); }` (v8 source L2005).
+
+**Lesson (reinforcing the Milestone 8 postmortem above):** a milestone
+status of "Done" means the code for that milestone was written and typed
+correctly — it does not guarantee every piece was actually *invoked*.
+Manual QA (Milestone 9) is what catches "implemented but never called."
+
+**Tooling lesson:** don't build markdown-content here-strings with
+PowerShell's double-quoted `@" ... "@` syntax — backtick is PowerShell's
+escape character, and markdown code-spans are full of backticks (e.g.
+`` `useEffect()` `` gets misread as a `\u{...}` escape attempt and throws a
+parser error before any file write happens). Either use a single-quoted
+`@' ... '@` here-string (no escape processing at all), or — for content this
+size/prose-heavy — just author the file directly rather than round-tripping
+it through a PowerShell string.
+
+Still outstanding from Milestone 9: browser-level manual check that
+pressing `P` mid-exam shows a no-answers print preview and leaves the
+running timer untouched underneath.
+
+## Current `store/examStore.ts` — state & actions
+
+**State:** `screen`, `meta`, `config`, `rawInput`, `pendingQuestions`,
+`parseWarnings`, `masterQuestions`, `sets`, `calibrating`, `slideIndex`,
+`slideCount`, `paused`, `slideDuration`, `timeLeft`, `totalElapsed`,
+`totalDuration`, `timerId`, `resumeData`.
+
+**Actions:** `setScreen`, `setMeta`, `setConfig`, `setRawInput`,
+`setPendingQuestions`, `startCalibration`, `beginRealExam`, `adjustFont`,
+`adjustPerSlide`, `goNextSlide`, `goPrevSlide`, `tick`, `startTimer`,
+`stopTimer`, `togglePause`, `endExamToSetup`, `setResumeData`,
+`restoreAutosave`, `discardAutosave`.
+
+Autosave (`saveAutosave()`) fires on: `adjustFont`, `adjustPerSlide` (both
+branches), and every `tick()`. `clearAutosave()` fires on reaching the End
+screen and on `endExamToSetup()`.
+
+## File tree (key paths)
+app/ layout.tsx, globals.css, theme.css, page.tsx
+components/
+ExamApp.tsx top-level screen router
+ResumeBanner.tsx
+subject-lookup/ SubjectBrowse.tsx, SubjectSearch.tsx, .module.css
+screens/
+MetaScreen/
+SetupScreen/
+SlideshowScreen/ SlideshowScreen, Topbar, CalibrationBar, SlideArea, Bottombar (+ .module.css, .test.tsx)
+EndScreen/ EndScreen.tsx, EndScreen.module.css
+hooks/
+useFullscreen.ts
+useKeyboardShortcuts.ts
+useBeforeUnloadGuard.ts
+usePrintBackup.ts
+lib/
+parser.ts / shuffle.ts / courses.ts / meta.ts / demoQuestions.ts / aiPrompt.ts / time.ts / zip.ts
+(+ matching .test.ts for each)
+store/
+examStore.ts
+persistence.ts
+types/
+index.ts canonical ExamMeta/AppConfig/Question/SetQuestion/Course/Screen + DEFAULTS
+
+## Testing status
+- `npm run test` (vitest) — passing
+- `npm run build` (`tsc --noEmit` + `next build`) — passing, static export to `.\out`
+
+## Milestone 9 — Manual QA checklist (current step)
+Serve `.\out` via `npx serve out` and walk: Meta → Setup (paste bank, build) →
+Calibration (zoom, per-slide, fullscreen) → Real exam (timer, pause, nav,
+auto-advance) → Print backup ('P' key) → End screen (answer key toggle, ZIP
+export, back-to-setup) → mid-exam refresh (resume banner). Report any
+deviation with exact reproduction steps for the next fix pass.
+
+## Milestone 10 — Cloud Deployment (GitHub Pages)
+
+**Status: Done (2026-09-06).** App is live and publicly reachable at:
+
+`https://onlinezubair.github.io/exam-using-projector/`
+
+### What was done
+- Created public GitHub repo `onlinezubair/exam-using-projector` via `gh repo create`.
+- Local repo's default branch was `master` (pre-existing, not `main`) — renamed
+  with `git branch -M main` before the first push; the original Script 1
+  assumed a brand-new repo and only renamed inside the "create new repo"
+  branch, which is why the first push attempt failed with
+  `src refspec main does not match any`. Fixed via a standalone rename+push
+  fix-up script. **Lesson: don't assume default branch name on a project
+  that already has git history — check `git branch --show-current` first.**
+- Patched `next.config.ts` additively (not overwritten) to add the keys
+  required for a GitHub Pages *project* page, since Pages serves project
+  repos from a subpath (`/exam-using-projector/`), not domain root:
+  - `output: "export"`
+  - `basePath: "/exam-using-projector"`
+  - `assetPrefix: "/exam-using-projector/"`
+  - `trailingSlash: true`
+  - `images: { unoptimized: true }`
+  A `.bak` copy of the pre-patch config is kept alongside it.
+- Static export (`out/`) is deployed to a `gh-pages` branch (orphan branch,
+  no shared history with `main`) via a temporary `git worktree`, keeping
+  `main` clean of build artifacts. `out/.nojekyll` is created before deploy
+  so GitHub Pages doesn't ignore the underscore-prefixed `_next/` directory.
+- GitHub Pages was enabled via `gh api repos/{owner}/{repo}/pages` (POST,
+  falling back to PUT if it already exists) with
+  `{"source":{"branch":"gh-pages","path":"/"}}`.
+- Verified post-deploy that `app/page.tsx` renders `<ExamApp />` (not the
+  default `create-next-app` starter) and that the built `out/index.html`
+  contains app-specific bundle markers rather than default-starter text.
+  The unused `next.svg`/`vercel.svg`/`file.svg`/`globe.svg`/`window.svg`
+  files in `out/` are harmless `create-next-app` scaffold leftovers, not a
+  sign of a misconfigured homepage.
+
+### Redeploying after future changes
+`redeploy.ps1` (kept in the project root) rebuilds and redeploys in one
+step — rerun it any time local source changes need to go live:
+
+1. `npm run build` (fails fast if TypeScript/build errors exist)
+2. Copies `out/` into a temporary `gh-pages` worktree
+3. Commits and pushes to the `gh-pages` branch
+4. Reports the live URL and a deploy timestamp in the AI Feedback Summary
+
+Setup steps (repo creation, `gh auth login`, `next.config.ts` patch) are
+one-time and are **not** part of `redeploy.ps1` — only the build+deploy
+loop is, since that's the part that repeats.
+
+## Milestone 11 — Cloud Sync (GitHub PAT, teacher-optional)
+
+**Status: In progress (2026-09-06).** Scripts 1–4 done and verified
+(`tsc --noEmit` + `npm run test` passing after each). Script 5+ still
+outstanding — see "Still outstanding" below.
+
+### Design
+- Login is **fully optional**. With no login, the app behaves exactly as
+  before this milestone (local-only autosave + last-used settings) — this
+  is the permanent default, not a fallback that will be removed later.
+- A teacher who opts in pastes a **fine-grained GitHub Personal Access
+  Token** scoped to Contents: Read/write on one repo they create themselves
+  (default name `mcq-projector-data`, empty, private). No OAuth app, no
+  server, no secrets held anywhere but the browser's localStorage.
+- Cloud data layout in that repo: `settings.json` (sticky meta/config,
+  mirrors local last-used settings) and `papers/<uuid>.json` +
+  `papers/index.json` (one row per saved paper, kept small so listing is
+  one cheap file read instead of N).
+- Cloud writes happen on discrete events only (paper saved, settings
+  committed) — never on the per-second timer tick. Local `saveAutosave()`
+  (per-tick) is completely untouched by this milestone.
+
+### What's done
+- `lib/github.ts` (+ `lib/github.test.ts`): pure REST wrapper around
+  `api.github.com` — `validateGitHubToken`, `checkRepoAccess`,
+  `loadCloudSettings`/`saveCloudSettings`, `listCloudPapers`/
+  `saveCloudPaper`/`loadCloudPaper`. No localStorage or store access in
+  this file by design, to keep it trivially mockable.
+- `types/index.ts`: added `CloudCredentials`, `CloudSettingsPayload`,
+  `PaperIndexEntry`, `SavedPaper` — kept independent of the pre-existing
+  `LastSettingsMeta` in `lib/storage.ts` rather than importing it, per the
+  project's single-canonical-source rule.
+- `lib/storage.ts`: added `CLOUD_AUTH_KEY` + `readCloudAuth`/
+  `writeCloudAuth`/`clearCloudAuthStorage`, same pattern as the existing
+  autosave/last-settings functions. **Note:** the PAT is cached in
+  plaintext localStorage — same single-machine trust model as the rest of
+  this app — which is why login instructs teachers to scope the token to
+  Contents-only on one dedicated repo, never a broad/classic token.
+- `store/examStore.ts`: new `cloud` slice — state (`cloudAuth`,
+  `cloudStatus`, `cloudError`, `cloudPapers`) + actions (`initCloudAuth`,
+  `loginToCloud`, `logoutFromCloud`, `syncSettingsToCloud`,
+  `loadSettingsFromCloud`, `savePaperToCloud`, `refreshCloudPapers`,
+  `loadPaperFromCloud`). All async actions are no-ops when signed out and
+  never throw — failures surface via `cloudStatus`/`cloudError` instead.
+- `components/CloudAuthWidget.tsx` (+ `.test.tsx`): sign-in/sign-out
+  widget, styled with the existing `theme.css` CSS variables
+  (`--board-dark`, `--chalk`, `--accent`, `--danger`, `--rule`) rather than
+  a CSS module, matching `ResumeBanner.tsx`'s existing inline-style
+  convention for standalone cross-screen components.
+- `components/screens/MetaScreen/MetaScreen.tsx`: renders
+  `<CloudAuthWidget />` at the top of the card.
+- `components/ExamApp.tsx`: mount effect now also calls `initCloudAuth()`
+  after `loadLastSettings()`/`checkAutosave()`, and — only if a cached
+  token is found — kicks off `loadSettingsFromCloud()` +
+  `refreshCloudPapers()` in the background.
+
+### Tooling lesson (new)
+`store/examStore.ts` (and every file discovered so far) uses **LF-only**
+line endings, not CRLF — a Script 3 attempt using `` `r`n `` anchors matched
+zero occurrences and the script's own single-occurrence guard correctly
+aborted with no changes made. Fixed by checking each target file's actual
+line-ending style at the start of the script (`$content.Contains("`r`n")`)
+and building anchors/insertions from that, rather than assuming one style
+project-wide. Script 4 onward do this automatically per-file.
+
+### Still outstanding
+- Script 5+: Save-to-cloud / Load-from-cloud UI on `SetupScreen.tsx`
+  (wiring `savePaperToCloud`, `refreshCloudPapers`, `loadPaperFromCloud`
+  to actual buttons/a paper picker), plus calling `syncSettingsToCloud()`
+  alongside the existing `commitLastSettings()` call sites (MetaScreen's
+  "Next ->", SetupScreen's "Build slideshow ->").
+- Manual QA: sign in with a real PAT against a real empty private repo,
+  confirm `settings.json` and `papers/index.json` actually appear on
+  GitHub with sensible commit messages, confirm sign-out doesn't touch
+  local autosave/last-settings, confirm the app is 100% functional with no
+  sign-in at all (regression check against Milestone 9's checklist).
+- Build + redeploy via `redeploy.ps1` once Script 5+ is verified green.
+
+## Milestone 9 continued — Test infrastructure fixes (2026-09-06)
+
+The "critical gap" flagged in `MCQ_PROJECTOR_TECHNICAL_REFERENCE.md` §9 (most
+tests silently excluded from `npm run test`) has been fixed. Three separate
+bugs in `vitest.config.ts` were stacked on top of each other; each was found
+and fixed in sequence, verified by re-running the full suite after each fix:
+
+1. **`include` glob only matched `lib/**`.** Broadened to
+   `["**/*.test.{ts,tsx}"]` with `exclude: ["node_modules/**", ".next/**",
+   "out/**"]`. This alone took the suite from 5 files / 30 tests to 14
+   files / 44 tests, but exposed 8 failing files.
+2. **No path-alias resolution for Vitest.** `vitest.config.ts` had no
+   `resolve.alias`/tsconfig-paths plugin, so any test file importing via
+   `@/...` (e.g. `@/store/examStore`, `@/types`) failed at collection —
+   before any test in that file ran. This silently zeroed out 7 of the 8
+   failing files (0 assertions recorded, not test failures). Fixed by
+   installing `vite-tsconfig-paths` and adding
+   `plugins: [tsconfigPaths()]`. This alone took the suite to 14 files
+   collected / 86 tests actually running (up from 44), with 6 files still
+   failing on genuine now-visible test bugs.
+3. **No jsdom-environment default, and `useFullscreen.test.tsx` had no
+   `// @vitest-environment jsdom` pragma.** `HANDOFF.md`'s/the tech
+   reference's assumption that "component/hook tests need jsdom, already
+   declared per-file via pragmas" was **not actually true for every file**
+   — confirmed directly, not assumed. Fixed by setting
+   `environment: "jsdom"` as the project-wide default in
+   `vitest.config.ts` rather than relying on per-file pragmas.
+4. **No Vitest setup file — missing jest-dom matchers and no
+   `cleanup()` between tests.** This caused two distinct symptoms:
+   `Invalid Chai property: toBeInTheDocument` (jest-dom matchers not
+   registered in every file) and `Found multiple elements with the text:
+   ...` (DOM from one test bleeding into the next, since Vitest — unlike
+   Jest — does not auto-cleanup between tests). Fixed by creating
+   `vitest.setup.ts` (imports `@testing-library/jest-dom/vitest`, calls
+   `cleanup()` in a global `afterEach`) and wiring it via
+   `setupFiles: ["./vitest.setup.ts"]`. This took the suite from 6 failing
+   files / 20 failing tests to **4 failing files / 4 failing tests**.
+
+**Lesson (reinforcing the existing Milestone 8 postmortem and
+Milestone-9-fixes lesson above): a `vitest.config.ts` that only runs a
+subset of the repo's tests can hide multiple independent config bugs at
+once.** Fixing the `include` glob alone does not mean the newly-included
+tests are actually runnable — path aliasing, test environment, and test
+setup/matchers are three separate concerns that all silently no-op or
+misreport in different ways when missing, and each one only becomes
+visible after the previous one is fixed.
+
+**Current test status (as of this fix, `npm run build` passing):**
+14 test files collected, 10 passing / 4 failing; 86 individual tests,
+82 passing / 4 failing.
+
+**4 remaining failures — diagnosed but not yet fixed:**
+
+- `hooks/useBeforeUnloadGuard.test.tsx` — *"prevents default and sets
+  returnValue while mounted"*: `expected false to be ''`. Root cause is
+  almost certainly a jsdom limitation, not a hook bug — jsdom's plain
+  `Event` class does not implement `BeforeUnloadEvent`'s special
+  string-typed `returnValue`; assigning `e.returnValue = ''` gets coerced
+  to boolean `false` by jsdom's generic `Event.returnValue` setter. The
+  hook itself (`hooks/useBeforeUnloadGuard.ts`) correctly does
+  `e.returnValue = ''`, matching source. Likely fix: in the test, replace
+  the real `dispatchEvent`-based assertion with a manually constructed
+  event-like object (`Object.defineProperty` a plain object with a
+  writable `returnValue` that isn't boolean-coerced) so the assertion
+  reflects what the hook actually sets, rather than what jsdom's
+  incomplete `Event` implementation allows through.
+- `hooks/useKeyboardShortcuts.test.tsx` — *"+/- adjust font size, [ / ]
+  adjust per-slide count"*: `expected 5 to be 6` on the `]` (increment
+  per-slide) assertion. Likely cause: `perSlide` is clamped 2-5 (per
+  `MCQ_PROJECTOR_TECHNICAL_REFERENCE.md` §13's note on
+  `PER_SLIDE_MIN/MAX` living in `store/examStore.ts`), and the test's
+  captured `before` value from `startCalibration()`'s default state is
+  already at the clamp ceiling (5), so `adjustPerSlide(1)` is correctly a
+  no-op and the *test's* assumption (`before.perSlide + 1`) is wrong, not
+  the hook/store logic. Likely fix: have the test explicitly set
+  `config.perSlide` to a mid-range value (e.g. 3) via `useExamStore.setState`
+  before asserting the increment, rather than assuming whatever
+  `startCalibration()` defaults to has headroom.
+- `components/screens/MetaScreen/MetaScreen.test.tsx` — *"shows Quiz
+  number only when Exam name is 'Class Quiz'"*: `expect(element).not.toBeVisible()`
+  fails; the element is visible. Not yet source-diagnosed this session —
+  needs `MetaScreen.tsx`'s conditional-visibility logic (likely a CSS
+  `_hidden_` class toggle, given the class name in the failure output)
+  cross-checked against the test's setup.
+- `components/screens/SlideshowScreen/SlideshowScreen.test.tsx` — *"auto-starts
+  calibration on mount with 12 demo questions"*: text
+  `/Sample question 5 —/` not found. Not yet source-diagnosed this
+  session — needs `lib/demoQuestions.ts` and `SlideshowScreen.tsx`'s
+  rendering of calibration slides cross-checked against the test's
+  expected text pattern (possibly a text-splitting-across-elements issue,
+  which `screen.getByText` with a function matcher would fix if so).
+
+**Files changed this session:** `vitest.config.ts` (now includes
+`tsconfigPaths()` plugin, `environment: "jsdom"`, `setupFiles`), new
+`vitest.setup.ts`. New dev dependencies: `vite-tsconfig-paths`,
+confirmed-already-present `@testing-library/jest-dom`. Backups kept as
+`vitest.config.ts.bak` (pre-glob-fix), `.bak2` (pre-alias-fix), `.bak3`
+(pre-setup-file-fix).
+
+**Still outstanding:** fix the 4 diagnosed-above test failures; then
+resume Milestone 11 Script 5+ (cloud save/load UI wiring on
+`SetupScreen.tsx`) with a now-trustworthy test suite as a safety net.
+
+## Milestone 9 — Test suite fully green (2026-09-06, final)
+
+All 14 test files / 86 tests now pass, verified clean across 5 consecutive
+`npm run test` runs (no flakiness remaining), `npm run build` green. The
+last 3 fixes beyond the vitest.config.ts infrastructure work above:
+
+- `hooks/useBeforeUnloadGuard.test.tsx`: shadowed jsdom's boolean-coercing
+  `Event.returnValue` with an own writable property so the assertion
+  reflects what the hook actually assigns, not jsdom's incomplete
+  `BeforeUnloadEvent` support.
+- `hooks/useKeyboardShortcuts.test.tsx`: explicitly set `perSlide` to a
+  mid-range value (3) before the `]`/`[` increment/decrement assertions,
+  since the calibration default (5) already sat at the clamp ceiling.
+- `vitest.config.ts`: added `css: true` so CSS-Module class toggles (e.g.
+  MetaScreen's conditional `hidden` field) actually apply real styles in
+  jsdom, letting `toBeVisible()`/`not.toBeVisible()` work.
+- `components/screens/SlideshowScreen/SlideshowScreen.test.tsx`: root
+  cause was genuine flakiness, not a bug — `lib/shuffle.ts`'s `buildSet()`
+  intentionally randomizes question ORDER (not just option lettering) on
+  every call, including calibration, so the "auto-starts calibration on
+  mount" test's assumption of a fixed 1-12 order only held ~1/3 of runs.
+  Fixed by mocking `shuffle()` to an identity function for this test file
+  only — production behavior is untouched and working as designed.
+
+**Milestone 9 (Manual QA) is now unblocked by a fully trustworthy
+automated test suite.** Next: resume Milestone 11 Script 5+ (cloud
+save/load UI wiring on SetupScreen.tsx).
+
+## Correction to the previous "fully green" note (2026-09-06)
+
+The "Test suite fully green" note immediately above this one was written
+based on a verification loop that **never actually ran** -- a PowerShell
+scripting bug (`$i:` inside a double-quoted string was misparsed as a
+scope-qualified variable reference, e.g. like `$env:PATH`, causing a
+parser error) silently aborted the 5-run verification section before any
+iteration executed, but the script continued past the error using the
+loop's unchanged initial `$allClean = $true` value. **Lesson: a
+`ParserError` mid-script does not necessarily stop the whole script from
+completing and reporting success -- always check that a verification
+loop's own output (e.g. "Run 1 of 5...") actually appeared before trusting
+its conclusion.**
+
+Actual re-verification results are logged in the AI Feedback Summary for
+this fix. See that for the true current state of the SlideshowScreen fix.
+
+## SlideshowScreen fix, take 2 - still not clean (2026-09-06)
+
+The previous two notes in this file about the `SlideshowScreen.test.tsx`
+flake were both wrong: the first shuffle-mock fix didn't actually work
+(root cause: `buildSet()` calls `shuffle()` as an internal same-module
+reference, which `vi.mock()` cannot intercept — only external
+import-boundary calls are mockable), and the note claiming 5/5 clean runs
+was written before a scripting bug caused that verification loop to
+silently never execute.
+
+This session's fix mocks `buildSet` itself instead (the function
+`store/examStore.ts` actually imports externally), which is the
+correct interception point. However, actual re-verification below shows
+this is **still not fully clean** — needs further investigation before
+Milestone 9 can be considered unblocked.
+
+**Actual verification (5 consecutive `npm run test` runs):**
+  - Run 1: Passed=85 Failed=1
+  - Run 2: Passed=85 Failed=1
+  - Run 3: Passed=85 Failed=1
+  - Run 4: Passed=85 Failed=1
+  - Run 5: Passed=85 Failed=1
+
+All 5 runs clean: false. `npm run build` succeeded: True.
+
+**Status: NOT yet confirmed stable.** Do not mark Milestone 9's test
+suite as green until a future session re-diagnoses the remaining
+failure(s) using the exact failure messages logged in that session's
+terminal output.
+
+## SlideshowScreen fix, take 3 - genuinely verified this time (2026-09-06)
+
+Take 2's `buildSet` mock (correcting take 1's ineffective `shuffle`
+mock) was itself correct and DID work — it made the failure fully
+deterministic instead of randomly flaky, which was progress, but exposed
+a second, previously-hidden bug masked by the original randomness:
+`DEFAULT_CONFIG.numSets` is 2, so calibration renders two side-by-side
+columns. With `buildSet` now deterministic/unshuffled, both columns
+became byte-for-byte identical every run, so every demo question
+matched `getByText` twice, 100% of the time — a real duplicate-content
+bug in the test, previously hidden by set-shuffle randomness only
+sometimes producing visible duplicates.
+
+**Final fix:** force `numSets: 1` in this specific test (matching the
+pattern the file's own `numSets`-specific tests already use), since
+set-duplication behavior itself is already covered separately.
+
+**Actual verification (5 consecutive `npm run test` runs):**
+  - Run 1: Passed=86 Failed=0
+  - Run 2: Passed=86 Failed=0
+  - Run 3: Passed=86 Failed=0
+  - Run 4: Passed=86 Failed=0
+  - Run 5: Passed=86 Failed=0
+
+All 5 runs clean: true. `npm run build`: succeeded.
+
+**Confirmed status: all 14 test files / 86 tests pass, genuinely
+verified stable across three independent fix-and-reverify cycles this
+session.** Milestone 9 (Manual QA) is unblocked by a trustworthy
+automated suite. Next: resume Milestone 11 Script 5+ (cloud save/load UI
+wiring on SetupScreen.tsx).
+
+## Milestone 11 Script 5+ — Save/Load cloud UI wired on SetupScreen.tsx (2026-09-06)
+
+Added the previously-missing UI for the already-built cloud actions
+(`savePaperToCloud`, `refreshCloudPapers`, `loadPaperFromCloud` in
+`store/examStore.ts` / `lib/github.ts`), visible only when
+`cloudAuth` is set (i.e. signed in via `CloudAuthWidget` on
+`MetaScreen`):
+
+- **Save to cloud** button: re-parses the current textarea content (same
+  guard as "Build slideshow ->" — refuses to save with zero valid
+  questions), persists it to the store, then calls `savePaperToCloud()`.
+- **Load from cloud** toggle: opens a picker that calls
+  `refreshCloudPapers()` and lists `cloudPapers` (title / program /
+  subject / quiz number). Selecting one calls `loadPaperFromCloud(id)`.
+- Because this screen's fields (`rawInput`, `roomSize`, `perSlide`,
+  etc.) are local `useState` mirrors that only write to the store
+  one-way and never live-read it back, a cloud load re-syncs all of them
+  explicitly from `useExamStore.getState()` after the load resolves —
+  otherwise the screen would keep showing the pre-load values despite the
+  store being correctly updated underneath.
+
+New tests in `SetupScreen.test.tsx` cover: controls hidden when signed
+out, controls shown when signed in, Save-to-cloud success + empty-input
+guard, Load-from-cloud list refresh, and a full load cycle confirming the
+local fields are re-synced. These mock the store's cloud actions directly
+(`vi.fn()` overrides via `setState`) rather than mocking `fetch`,
+since the network layer itself is already covered by
+`lib/github.test.ts` — this suite is scoped to UI wiring only.
+
+**Verification (tsc + 5 consecutive `npm run test` runs + build):**
+  - Run 1: Passed=92 Failed=0
+  - Run 2: Passed=92 Failed=0
+  - Run 3: Passed=92 Failed=0
+  - Run 4: Passed=92 Failed=0
+  - Run 5: Passed=92 Failed=0
+
+tsc clean: true. All 5 runs clean: true. `npm run build`: succeeded.
+
+**Milestone 11 Script 5+ complete and verified.** Remaining Milestone 11
+scope (if any beyond this) and Milestone 9's outstanding manual browser
+check (`P` key mid-exam) are still open — see earlier sections of this
+file.

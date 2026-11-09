@@ -7,6 +7,34 @@ import { useExamStore } from '@/store/examStore';
 import { DEFAULT_CONFIG, DEFAULT_META } from '@/types';
 import type { Question } from '@/types';
 
+// lib/shuffle.ts's buildSet() intentionally randomizes question ORDER
+// (not just option lettering) on every call -- calibration previews the
+// same shuffled-set experience students get in the real exam. That makes
+// "which questions land in the first slide" non-deterministic.
+//
+// IMPORTANT: mocking only `shuffle` (as a first attempt did) does NOT
+// work here. `buildSet` calls `shuffle` as an internal, same-module
+// reference -- vi.mock only intercepts calls that cross a module's
+// external import boundary, so `buildSet`'s own internal call to
+// `shuffle` keeps hitting the real, randomizing implementation
+// regardless of what the mock factory returns for that named export.
+// The fix is to mock `buildSet` itself, since store/examStore.ts imports
+// and calls it externally -- that IS a boundary vi.mock can intercept.
+vi.mock('@/lib/shuffle', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/shuffle')>();
+  return {
+    ...actual,
+    buildSet: (questions: Question[]) =>
+      questions.map((q, idx) => ({
+        displayNumber: idx + 1,
+        origNumber: q.number,
+        text: q.text,
+        options: q.options.map((o) => ({ letter: o.letter, text: o.text, origLetter: o.letter })),
+        answer: q.answer,
+      })),
+  };
+});
+
 // Resets the store to a clean pre-calibration state before each test, since
 // Zustand state is module-level and persists across tests otherwise. Any
 // new milestone's fields on examStore get added here too.
@@ -17,6 +45,9 @@ function resetStore() {
     pendingQuestions: [],
     masterQuestions: [],
     sets: [],
+    locked: false,
+    lockedMasterQuestions: [],
+    lockedSets: [],
     calibrating: false,
     slideIndex: 0,
     slideCount: 0,
@@ -48,6 +79,12 @@ describe('SlideshowScreen (calibration mode)', () => {
   });
 
   it('auto-starts calibration on mount with 12 demo questions', () => {
+    // DEFAULT_CONFIG.numSets is 2, which (with buildSet mocked to be
+    // deterministic/unshuffled above) renders two IDENTICAL side-by-side
+    // columns -- every question would then match getByText twice. Force a
+    // single column here since set-duplication itself is already covered
+    // by the "builds one set column.../shows a Set A/B label" tests below.
+    useExamStore.setState({ config: { ...DEFAULT_CONFIG, numSets: 1 } });
     render(<SlideshowScreen />);
     expect(screen.getByText(/Calibration mode/i)).toBeInTheDocument();
     // DEFAULT_CONFIG.perSlide is 5 -> questions 1..5 shown, not 6.
@@ -129,6 +166,7 @@ describe('SlideshowScreen (real exam timer — Milestone 6a)', () => {
       pendingQuestions: makeQuestions(6),
       config: { ...DEFAULT_CONFIG, perSlide: 3, numSets: 1, secsPerQ: 10 },
     });
+    useExamStore.getState().generateAndLockSets();
     render(<SlideshowScreen />);
     expect(screen.getByText(/Calibration mode/i)).toBeInTheDocument();
 
@@ -152,6 +190,7 @@ describe('SlideshowScreen (real exam timer — Milestone 6a)', () => {
       pendingQuestions: makeQuestions(1),
       config: { ...DEFAULT_CONFIG, perSlide: 1, numSets: 1, secsPerQ: 5 },
     });
+    useExamStore.getState().generateAndLockSets();
     render(<SlideshowScreen />);
     act(() => {
       fireEvent.click(screen.getByText('Start Exam →'));
@@ -170,6 +209,7 @@ describe('SlideshowScreen (real exam timer — Milestone 6a)', () => {
       pendingQuestions: makeQuestions(3),
       config: { ...DEFAULT_CONFIG, perSlide: 1, numSets: 1, secsPerQ: 20 },
     });
+    useExamStore.getState().generateAndLockSets();
     render(<SlideshowScreen />);
     act(() => {
       fireEvent.click(screen.getByText('Start Exam →'));
@@ -200,6 +240,7 @@ describe('SlideshowScreen (real exam timer — Milestone 6a)', () => {
       pendingQuestions: makeQuestions(2),
       config: { ...DEFAULT_CONFIG, perSlide: 1, numSets: 1, secsPerQ: 3 },
     });
+    useExamStore.getState().generateAndLockSets();
     render(<SlideshowScreen />);
     act(() => {
       fireEvent.click(screen.getByText('Start Exam →'));
@@ -219,6 +260,7 @@ describe('SlideshowScreen (real exam timer — Milestone 6a)', () => {
       pendingQuestions: makeQuestions(1),
       config: { ...DEFAULT_CONFIG, perSlide: 1, numSets: 1, secsPerQ: 2 },
     });
+    useExamStore.getState().generateAndLockSets();
     render(<SlideshowScreen />);
     act(() => {
       fireEvent.click(screen.getByText('Start Exam →'));

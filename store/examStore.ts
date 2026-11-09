@@ -6,6 +6,17 @@ import { buildDemoQuestions } from '@/lib/demoQuestions';
 import { nowLocalForInput } from '@/lib/meta';
 import { clearAutosave, saveAutosave, isRecoverableExam } from '@/store/persistence';
 import type { AutosavePayload, AutosaveExamState } from '@/lib/storage';
+import type { GoogleCredentials, CloudSettingsPayload, PaperIndexEntry, SavedPaper } from '@/types';
+import { readCloudAuth, writeCloudAuth, clearCloudAuthStorage } from '@/lib/storage';
+import {
+  validateGoogleToken,
+  checkDriveAccess,
+  loadCloudSettings,
+  saveCloudSettings,
+  listCloudPapers,
+  saveCloudPaper,
+  loadCloudPaper,
+} from '@/lib/googleDrive';
 
 interface ParseWarnings {
   skipped: string[];
@@ -92,6 +103,15 @@ interface ExamStoreState {
   // ---- Slideshow / calibration (Milestone 5) ----
   masterQuestions: Question[];
   sets: SetQuestion[][];
+  // ---- Set generation / lock (pre-exam) ----
+  // Built once by generateAndLockSets() right after Setup's "Build
+  // slideshow ->", from the real pasted question bank -- NOT rebuilt by
+  // beginRealExam(), which only ever reads these two fields. This
+  // guarantees the exam students actually see is byte-identical to the
+  // answer-key CSV / question-paper HTML already downloaded at lock time.
+  locked: boolean;
+  lockedMasterQuestions: Question[];
+  lockedSets: SetQuestion[][];
   calibrating: boolean;
   slideIndex: number;
   slideCount: number;
@@ -107,6 +127,12 @@ interface ExamStoreState {
   // ---- Persistence / crash-recovery (Milestone 7) ----
   resumeData: AutosavePayload | null;
 
+  // ---- Cloud sync (Milestone 11) ----
+  cloudAuth: GoogleCredentials | null;
+  cloudStatus: 'idle' | 'checking' | 'syncing' | 'error';
+  cloudError: string | null;
+  cloudPapers: PaperIndexEntry[];
+
   setScreen: (screen: Screen) => void;
   setMeta: (meta: ExamMeta) => void;
   setConfig: (config: AppConfig) => void;
@@ -121,6 +147,16 @@ interface ExamStoreState {
   // masterQuestions, builds real sets, refreshes meta.date unless it was
   // manually set, computes totalDuration, and starts the timer.
   beginRealExam: () => void;
+  // Builds `config.numSets` real shuffled sets from the parsed question
+  // bank and freezes them into lockedMasterQuestions/lockedSets. Called
+  // once, right after Setup's "Build slideshow ->" -- NOT at "Start Exam".
+  // Re-callable (see regenerateSets) -- each call overwrites both fields
+  // with a fresh shuffle.
+  generateAndLockSets: () => void;
+  // Confirm-gated re-shuffle: warns that previously downloaded files are
+  // now invalid, then calls generateAndLockSets() again. The Locked screen
+  // re-triggers its auto-download effect off the new lockedSets reference.
+  regenerateSets: () => void;
   // ±2px, clamped 14-60 (questions) / 12-48 (options). Source: adjustFont()
   // (L1430-1437).
   adjustFont: (delta: number) => void;
@@ -153,6 +189,38 @@ interface ExamStoreState {
   setResumeData: (data: AutosavePayload | null) => void;
   restoreAutosave: () => void;
   discardAutosave: () => void;
+
+  // ---- Cloud sync actions (Milestone 11) ----
+  // Hydrates cloudAuth from localStorage on app mount. Does not
+  // re-validate the token against GitHub -- a stale/revoked token
+  // surfaces as an error on the next actual cloud action instead of
+  // blocking app startup.
+  initCloudAuth: () => void;
+  // Validates the pasted PAT, checks write access to `repo` (defaults to
+  // DEFAULT_CLOUD_REPO), and on success caches credentials + pulls cloud
+  // settings and the paper list. Never throws -- failures surface via
+  // cloudStatus/cloudError.
+  loginToCloud: (accessToken: string, expiresInSeconds: number) => Promise<void>;
+  // Clears cached credentials + in-memory cloud state. Never touches
+  // local autosave/last-settings -- logging out never loses local work.
+  logoutFromCloud: () => void;
+  // Pushes current meta/config as this teacher's cloud-side sticky
+  // defaults. No-ops if not logged in.
+  syncSettingsToCloud: () => Promise<void>;
+  // Pulls cloud settings (if any) and merges into meta/config, resetting
+  // `date` to now and clearing dateManuallySet -- same rule as
+  // loadLastSettings(). No-ops if not logged in.
+  loadSettingsFromCloud: () => Promise<void>;
+  // Saves pendingQuestions + current meta/config as a new cloud paper,
+  // then refreshes cloudPapers. No-ops if not logged in.
+  savePaperToCloud: () => Promise<void>;
+  // Refreshes cloudPapers from the cloud repo's index. No-ops if not
+  // logged in.
+  refreshCloudPapers: () => Promise<void>;
+  // Loads one saved paper by id and applies it exactly like a freshly
+  // pasted + parsed bank (rawInput, pendingQuestions, meta, config),
+  // routing to 'setup'. No-ops if not logged in.
+  loadPaperFromCloud: (id: string) => Promise<void>;
 }
 
 export const useExamStore = create<ExamStoreState>((set, get) => ({
@@ -165,6 +233,9 @@ export const useExamStore = create<ExamStoreState>((set, get) => ({
 
   masterQuestions: [],
   sets: [],
+  locked: false,
+  lockedMasterQuestions: [],
+  lockedSets: [],
   calibrating: false,
   slideIndex: 0,
   slideCount: 0,
@@ -176,6 +247,11 @@ export const useExamStore = create<ExamStoreState>((set, get) => ({
   totalDuration: 0,
   timerId: null,
   resumeData: null,
+
+  cloudAuth: null,
+  cloudStatus: 'idle',
+  cloudError: null,
+  cloudPapers: [],
 
   setScreen: (screen) => set({ screen }),
   setMeta: (meta) => set({ meta }),
@@ -197,16 +273,41 @@ export const useExamStore = create<ExamStoreState>((set, get) => ({
     });
   },
 
+  generateAndLockSets: () => {
+    const { config, pendingQuestions } = get();
+    const masterQuestions = pendingQuestions;
+    const sets: SetQuestion[][] = [];
+    for (let s = 0; s < config.numSets; s++) sets.push(buildSet(masterQuestions));
+    set({ lockedMasterQuestions: masterQuestions, lockedSets: sets, locked: true });
+  },
+
+  regenerateSets: () => {
+    if (
+      typeof window !== 'undefined' &&
+      !window.confirm(
+        'This will generate a brand-new shuffle and invalidate the answer key / question papers you already downloaded. You will need to re-download them. Continue?'
+      )
+    ) {
+      return;
+    }
+    get().generateAndLockSets();
+  },
+
   beginRealExam: () => {
-    const { meta, config, pendingQuestions } = get();
+    const { meta, config, lockedMasterQuestions, lockedSets } = get();
 
     // Refresh the exam date/time to the moment the real exam actually
     // starts — unless the teacher manually overrode it (source L1741-1745).
     const newMeta = meta.dateManuallySet ? meta : { ...meta, date: nowLocalForInput() };
 
-    const masterQuestions = pendingQuestions;
-    const sets: SetQuestion[][] = [];
-    for (let s = 0; s < config.numSets; s++) sets.push(buildSet(masterQuestions));
+    // Deliberately does NOT rebuild sets — generateAndLockSets() already
+    // froze the real shuffle right after Setup's "Build slideshow ->", and
+    // it must stay byte-identical to the already-downloaded answer key /
+    // question papers. Calibration mode overwrites the working
+    // masterQuestions/sets fields with demo data in the meantime; this
+    // restores the real, locked ones.
+    const masterQuestions = lockedMasterQuestions;
+    const sets = lockedSets;
     const slideCount = Math.ceil(masterQuestions.length / config.perSlide);
     const slideIndex = 0;
     const slideDuration = computeSlideDurationFor(slideIndex, masterQuestions.length, config.perSlide, config.secsPerQ);
@@ -416,5 +517,149 @@ export const useExamStore = create<ExamStoreState>((set, get) => ({
     }
     clearAutosave();
     set({ resumeData: null });
+  },
+
+  initCloudAuth: () => {
+    const creds = readCloudAuth();
+    if (!creds) return;
+    if (creds.expiresAt <= Date.now()) {
+      // Google's implicit-flow token has no silent refresh -- an expired
+      // cached token is useless, so drop it rather than surfacing a
+      // confusing "signed in" state that fails on the first real request.
+      clearCloudAuthStorage();
+      return;
+    }
+    set({ cloudAuth: creds });
+  },
+
+  loginToCloud: async (accessToken, expiresInSeconds) => {
+    set({ cloudStatus: 'checking', cloudError: null });
+    const authResult = await validateGoogleToken(accessToken);
+    if (!authResult.valid || !authResult.email) {
+      set({ cloudStatus: 'error', cloudError: authResult.error ?? 'Login failed.' });
+      return;
+    }
+    const driveResult = await checkDriveAccess(accessToken);
+    if (!driveResult.valid) {
+      set({ cloudStatus: 'error', cloudError: driveResult.error ?? 'Drive access check failed.' });
+      return;
+    }
+    const expiresAt = Date.now() + expiresInSeconds * 1000;
+    const creds: GoogleCredentials = { accessToken, expiresAt, email: authResult.email };
+    writeCloudAuth(creds);
+    set({ cloudAuth: creds, cloudStatus: 'idle', cloudError: null });
+
+    try {
+      await get().loadSettingsFromCloud();
+      await get().refreshCloudPapers();
+    } catch (err) {
+      set({ cloudError: err instanceof Error ? err.message : 'Could not load cloud data.' });
+    }
+  },
+
+  logoutFromCloud: () => {
+    clearCloudAuthStorage();
+    set({ cloudAuth: null, cloudStatus: 'idle', cloudError: null, cloudPapers: [] });
+  },
+
+  syncSettingsToCloud: async () => {
+    const { cloudAuth, meta, config } = get();
+    if (!cloudAuth) return;
+    set({ cloudStatus: 'syncing' });
+    try {
+      const stickyMeta: Omit<ExamMeta, 'date' | 'dateManuallySet'> = {
+        program: meta.program,
+        semester: meta.semester,
+        subject: meta.subject,
+        subjectCode: meta.subjectCode,
+        subjectFullName: meta.subjectFullName,
+        subjectMode: meta.subjectMode,
+        examName: meta.examName,
+        quizNumber: meta.quizNumber,
+      };
+      await saveCloudSettings(cloudAuth, stickyMeta, config);
+      set({ cloudStatus: 'idle', cloudError: null });
+    } catch (err) {
+      set({ cloudStatus: 'error', cloudError: err instanceof Error ? err.message : 'Could not save settings to cloud.' });
+    }
+  },
+
+  loadSettingsFromCloud: async () => {
+    const { cloudAuth } = get();
+    if (!cloudAuth) return;
+    set({ cloudStatus: 'syncing' });
+    try {
+      const payload: CloudSettingsPayload | null = await loadCloudSettings(cloudAuth);
+      if (payload) {
+        set((state) => ({
+          meta: { ...state.meta, ...payload.meta, date: nowLocalForInput(), dateManuallySet: false },
+          config: { ...state.config, ...payload.config },
+        }));
+      }
+      set({ cloudStatus: 'idle', cloudError: null });
+    } catch (err) {
+      set({ cloudStatus: 'error', cloudError: err instanceof Error ? err.message : 'Could not load settings from cloud.' });
+    }
+  },
+
+  savePaperToCloud: async () => {
+    const { cloudAuth, meta, config, rawInput, pendingQuestions } = get();
+    if (!cloudAuth) return;
+    set({ cloudStatus: 'syncing' });
+    try {
+      const saved: SavedPaper = await saveCloudPaper(cloudAuth, { meta, config, rawInput, questions: pendingQuestions });
+      set((state) => ({
+        cloudPapers: [
+          {
+            id: saved.id,
+            savedAt: saved.savedAt,
+            title: saved.meta.examName || 'Untitled paper',
+            program: saved.meta.program,
+            subject: saved.meta.subject,
+            examName: saved.meta.examName,
+            quizNumber: saved.meta.quizNumber,
+          },
+          ...state.cloudPapers,
+        ],
+        cloudStatus: 'idle',
+        cloudError: null,
+      }));
+    } catch (err) {
+      set({ cloudStatus: 'error', cloudError: err instanceof Error ? err.message : 'Could not save paper to cloud.' });
+    }
+  },
+
+  refreshCloudPapers: async () => {
+    const { cloudAuth } = get();
+    if (!cloudAuth) return;
+    set({ cloudStatus: 'syncing' });
+    try {
+      const papers = await listCloudPapers(cloudAuth);
+      set({ cloudPapers: papers, cloudStatus: 'idle', cloudError: null });
+    } catch (err) {
+      set({ cloudStatus: 'error', cloudError: err instanceof Error ? err.message : 'Could not list cloud papers.' });
+    }
+  },
+
+  loadPaperFromCloud: async (id) => {
+    const { cloudAuth } = get();
+    if (!cloudAuth) return;
+    set({ cloudStatus: 'syncing' });
+    try {
+      const paper = await loadCloudPaper(cloudAuth, id);
+      if (paper) {
+        set({
+          rawInput: paper.rawInput,
+          pendingQuestions: paper.questions,
+          parseWarnings: { skipped: [], invalidAnswers: [] },
+          meta: paper.meta,
+          config: paper.config,
+          screen: 'setup',
+        });
+      }
+      set({ cloudStatus: 'idle', cloudError: null });
+    } catch (err) {
+      set({ cloudStatus: 'error', cloudError: err instanceof Error ? err.message : 'Could not load paper from cloud.' });
+    }
   },
 }));

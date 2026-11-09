@@ -43,6 +43,12 @@ describe('useKeyboardShortcuts', () => {
 
   it('+/- adjust font size, [ / ] adjust per-slide count', () => {
     useExamStore.getState().startCalibration();
+    // Force perSlide to a mid-range value first so the +1/-1 assertions
+    // below aren't silently absorbed by the 2-5 clamp (the calibration
+    // default can already sit at the ceiling).
+    useExamStore.setState({
+      config: { ...useExamStore.getState().config, perSlide: 3 },
+    });
     render(<Harness />);
     const before = useExamStore.getState().config;
     fireKey({ key: '+' });

@@ -32,15 +32,25 @@ ${questionsHtml}
 </body></html>`;
 }
 
+// ZipGrade-compatible answer-key CSV. Format verified directly against
+// ZipGrade's published "CSV Answer Key Import File Requirements" spec:
+// 5 columns (Key, Question Number, Response/Mapping, Point Value, Tags),
+// no leading comment/metadata line (ZipGrade's importer expects the
+// header row's first field to literally start with "Key" -- a comment
+// line above it is not part of their format and risks failing import).
+// Negative/partial marking for a wrong-but-attempted response is NOT a
+// column in ZipGrade's format -- it's expressed as an extra row per
+// question using the literal response value "[a&i]" ("Attempted, but
+// Incorrect"). That row is only emitted when marksIncorrect is non-zero,
+// so the default (marksIncorrect: 0) produces output identical in shape
+// to a plain single-point key.
 export function buildAnswerKeyCSV(
   sets: SetQuestion[][],
   masterQuestions: Question[],
-  config: AppConfig,
-  metaHeader: string
+  config: AppConfig
 ): string {
-  const header = "Key Letter,Question Number,Response/Mapping,Correct Marks,Incorrect Marks,Tags";
-  const commentHeader = `# ${metaHeader.replace(/,/g, ';')}`;
-  let csv = commentHeader + "\n" + header + "\n";
+  const header = "Key Letter,Question Number,Response/Mapping,Point Value,Tags";
+  let csv = header + "\n";
 
   const maxQuestions = Math.max(...sets.map(s => s.length), 0);
   for (let i = 0; i < maxQuestions; i++) {
@@ -48,8 +58,11 @@ export function buildAnswerKeyCSV(
     sets.forEach((set, setIdx) => {
       const q = set[i];
       const letter = getSetLabel(setIdx);
-      const mapping = q ? `Q${q.origNumber} → ${q.answer || '—'}` : '—';
-      csv += `${letter},${displayNumber},"${mapping}",${config.marksCorrect},${config.marksIncorrect},\n`;
+      const answer = q?.answer ?? '';
+      csv += `${letter},${displayNumber},${answer},${config.marksCorrect}\n`;
+      if (config.marksIncorrect !== 0) {
+        csv += `${letter},${displayNumber},[a&i],${config.marksIncorrect}\n`;
+      }
     });
   }
   return csv;
@@ -70,7 +83,7 @@ export function buildExportZip(
     files[`QuestionPaper-Set${letter}.html`] = strToU8(html);
   });
 
-  const csv = buildAnswerKeyCSV(sets, masterQuestions, config, metaHeader);
+  const csv = buildAnswerKeyCSV(sets, masterQuestions, config);
   files['AllAnswerKeys.csv'] = strToU8(csv);
 
   return zipSync(files);

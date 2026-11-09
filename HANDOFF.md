@@ -30,7 +30,11 @@ isolation.
 | 6b | Keyboard shortcuts, fullscreen, beforeunload guard | Done |
 | 7 | Persistence: autosave, last-used settings, resume banner | Done (see fixes below — init call was missing) |
 | 8 | EndScreen (answer key + ZIP/CSV export), Print Backup overlay, wired 'P' key | Done — build verified green (`npm run test` + `npm run build`) (see fixes below — 'P' key was NOT actually wired) |
-| 9 | Manual QA pass (serve `out`, click through full flow) | **In progress** |
+| 9 | Manual QA pass (serve `out`, click through full flow) | **In progress** — automated suite fully green; manual browser click-through (incl. `P` key mid-exam) still outstanding |
+| 10 | Cloud Deployment (GitHub Pages) | Done — live at `onlinezubair.github.io/exam-using-projector` |
+| 11 | Cloud Sync (GitHub PAT, teacher-optional) | All code work done and verified (Save/Load UI + `syncSettingsToCloud` wiring); manual QA + redeploy still outstanding |
+| 12 | Google Sign-In for teachers (replaces GitHub PAT) | **In progress** — `lib/googleDrive.ts` read/write layer complete and tested (tsc clean, 109/109 tests, `npm run build` green); UI wiring (`initTokenClient` sign-in flow, `CloudAuthWidget.tsx` rework) not started |
+| 13 | Pre-exam set lock + ZipGrade-compatible auto-export | **In progress** — store logic done and verified (Steps 1-3: `locked`/`lockedMasterQuestions`/`lockedSets` state, `generateAndLockSets()`/`regenerateSets()`, `beginRealExam()` no longer re-shuffles, `lib/zip.ts` CSV rewritten to ZipGrade's real import format); UI (`LockedScreen` modal, auto-download trigger, `SetupScreen.tsx`/`ExamApp.tsx` wiring) not started — see dated entry below |
 
 ## Confirmed deviations from the plan doc
 - `types/index.ts` is the single canonical source for `ExamMeta`, `AppConfig`,
@@ -159,3 +163,898 @@ Calibration (zoom, per-slide, fullscreen) → Real exam (timer, pause, nav,
 auto-advance) → Print backup ('P' key) → End screen (answer key toggle, ZIP
 export, back-to-setup) → mid-exam refresh (resume banner). Report any
 deviation with exact reproduction steps for the next fix pass.
+
+## Milestone 10 — Cloud Deployment (GitHub Pages)
+
+**Status: Done (2026-09-06).** App is live and publicly reachable at:
+
+`https://onlinezubair.github.io/exam-using-projector/`
+
+### What was done
+- Created public GitHub repo `onlinezubair/exam-using-projector` via `gh repo create`.
+- Local repo's default branch was `master` (pre-existing, not `main`) — renamed
+  with `git branch -M main` before the first push; the original Script 1
+  assumed a brand-new repo and only renamed inside the "create new repo"
+  branch, which is why the first push attempt failed with
+  `src refspec main does not match any`. Fixed via a standalone rename+push
+  fix-up script. **Lesson: don't assume default branch name on a project
+  that already has git history — check `git branch --show-current` first.**
+- Patched `next.config.ts` additively (not overwritten) to add the keys
+  required for a GitHub Pages *project* page, since Pages serves project
+  repos from a subpath (`/exam-using-projector/`), not domain root:
+  - `output: "export"`
+  - `basePath: "/exam-using-projector"`
+  - `assetPrefix: "/exam-using-projector/"`
+  - `trailingSlash: true`
+  - `images: { unoptimized: true }`
+  A `.bak` copy of the pre-patch config is kept alongside it.
+- Static export (`out/`) is deployed to a `gh-pages` branch (orphan branch,
+  no shared history with `main`) via a temporary `git worktree`, keeping
+  `main` clean of build artifacts. `out/.nojekyll` is created before deploy
+  so GitHub Pages doesn't ignore the underscore-prefixed `_next/` directory.
+- GitHub Pages was enabled via `gh api repos/{owner}/{repo}/pages` (POST,
+  falling back to PUT if it already exists) with
+  `{"source":{"branch":"gh-pages","path":"/"}}`.
+- Verified post-deploy that `app/page.tsx` renders `<ExamApp />` (not the
+  default `create-next-app` starter) and that the built `out/index.html`
+  contains app-specific bundle markers rather than default-starter text.
+  The unused `next.svg`/`vercel.svg`/`file.svg`/`globe.svg`/`window.svg`
+  files in `out/` are harmless `create-next-app` scaffold leftovers, not a
+  sign of a misconfigured homepage.
+
+### Redeploying after future changes
+`redeploy.ps1` (kept in the project root) rebuilds and redeploys in one
+step — rerun it any time local source changes need to go live:
+
+1. `npm run build` (fails fast if TypeScript/build errors exist)
+2. Copies `out/` into a temporary `gh-pages` worktree
+3. Commits and pushes to the `gh-pages` branch
+4. Reports the live URL and a deploy timestamp in the AI Feedback Summary
+
+Setup steps (repo creation, `gh auth login`, `next.config.ts` patch) are
+one-time and are **not** part of `redeploy.ps1` — only the build+deploy
+loop is, since that's the part that repeats.
+
+## Milestone 11 — Cloud Sync (GitHub PAT, teacher-optional)
+
+**Status: In progress (2026-09-06, updated same day).** Scripts 1–4 done
+and verified (`tsc --noEmit` + `npm run test` passing after each). Script
+5+ (Save-to-cloud / Load-from-cloud UI on `SetupScreen.tsx`) is now also
+done and verified — see the "Milestone 11 Script 5+" entry further down
+this file for the full account. Remaining scope is listed in "Still
+outstanding" below.
+
+### Design
+- Login is **fully optional**. With no login, the app behaves exactly as
+  before this milestone (local-only autosave + last-used settings) — this
+  is the permanent default, not a fallback that will be removed later.
+- A teacher who opts in pastes a **fine-grained GitHub Personal Access
+  Token** scoped to Contents: Read/write on one repo they create themselves
+  (default name `mcq-projector-data`, empty, private). No OAuth app, no
+  server, no secrets held anywhere but the browser's localStorage.
+- Cloud data layout in that repo: `settings.json` (sticky meta/config,
+  mirrors local last-used settings) and `papers/<uuid>.json` +
+  `papers/index.json` (one row per saved paper, kept small so listing is
+  one cheap file read instead of N).
+- Cloud writes happen on discrete events only (paper saved, settings
+  committed) — never on the per-second timer tick. Local `saveAutosave()`
+  (per-tick) is completely untouched by this milestone.
+
+### What's done
+- `lib/github.ts` (+ `lib/github.test.ts`): pure REST wrapper around
+  `api.github.com` — `validateGitHubToken`, `checkRepoAccess`,
+  `loadCloudSettings`/`saveCloudSettings`, `listCloudPapers`/
+  `saveCloudPaper`/`loadCloudPaper`. No localStorage or store access in
+  this file by design, to keep it trivially mockable.
+- `types/index.ts`: added `CloudCredentials`, `CloudSettingsPayload`,
+  `PaperIndexEntry`, `SavedPaper` — kept independent of the pre-existing
+  `LastSettingsMeta` in `lib/storage.ts` rather than importing it, per the
+  project's single-canonical-source rule.
+- `lib/storage.ts`: added `CLOUD_AUTH_KEY` + `readCloudAuth`/
+  `writeCloudAuth`/`clearCloudAuthStorage`, same pattern as the existing
+  autosave/last-settings functions. **Note:** the PAT is cached in
+  plaintext localStorage — same single-machine trust model as the rest of
+  this app — which is why login instructs teachers to scope the token to
+  Contents-only on one dedicated repo, never a broad/classic token.
+- `store/examStore.ts`: new `cloud` slice — state (`cloudAuth`,
+  `cloudStatus`, `cloudError`, `cloudPapers`) + actions (`initCloudAuth`,
+  `loginToCloud`, `logoutFromCloud`, `syncSettingsToCloud`,
+  `loadSettingsFromCloud`, `savePaperToCloud`, `refreshCloudPapers`,
+  `loadPaperFromCloud`). All async actions are no-ops when signed out and
+  never throw — failures surface via `cloudStatus`/`cloudError` instead.
+- `components/CloudAuthWidget.tsx` (+ `.test.tsx`): sign-in/sign-out
+  widget, styled with the existing `theme.css` CSS variables
+  (`--board-dark`, `--chalk`, `--accent`, `--danger`, `--rule`) rather than
+  a CSS module, matching `ResumeBanner.tsx`'s existing inline-style
+  convention for standalone cross-screen components.
+- `components/screens/MetaScreen/MetaScreen.tsx`: renders
+  `<CloudAuthWidget />` at the top of the card.
+- `components/ExamApp.tsx`: mount effect now also calls `initCloudAuth()`
+  after `loadLastSettings()`/`checkAutosave()`, and — only if a cached
+  token is found — kicks off `loadSettingsFromCloud()` +
+  `refreshCloudPapers()` in the background.
+
+### Tooling lesson (new)
+`store/examStore.ts` (and every file discovered so far) uses **LF-only**
+line endings, not CRLF — a Script 3 attempt using `` `r`n `` anchors matched
+zero occurrences and the script's own single-occurrence guard correctly
+aborted with no changes made. Fixed by checking each target file's actual
+line-ending style at the start of the script (`$content.Contains("`r`n")`)
+and building anchors/insertions from that, rather than assuming one style
+project-wide. Script 4 onward do this automatically per-file.
+
+### Still outstanding
+- ~~Script 5+: Save-to-cloud / Load-from-cloud UI on `SetupScreen.tsx`~~ —
+  **Done**, see "Milestone 11 Script 5+" entry below.
+- Wire `syncSettingsToCloud()` alongside the existing `commitLastSettings()`
+  call sites (MetaScreen's "Next ->", SetupScreen's "Build slideshow ->"),
+  so a signed-in teacher's sticky settings actually push to the cloud on
+  those events, not just on explicit paper save.
+- Manual QA: sign in with a real PAT against a real empty private repo,
+  confirm `settings.json` and `papers/index.json` actually appear on
+  GitHub with sensible commit messages, confirm sign-out doesn't touch
+  local autosave/last-settings, confirm the app is 100% functional with no
+  sign-in at all (regression check against Milestone 9's checklist).
+- Build + redeploy via `redeploy.ps1` once Script 5+ is verified green.
+
+## Milestone 9 continued — Test infrastructure fixes (2026-09-06)
+
+The "critical gap" flagged in `MCQ_PROJECTOR_TECHNICAL_REFERENCE.md` §9 (most
+tests silently excluded from `npm run test`) has been fixed. Three separate
+bugs in `vitest.config.ts` were stacked on top of each other; each was found
+and fixed in sequence, verified by re-running the full suite after each fix:
+
+1. **`include` glob only matched `lib/**`.** Broadened to
+   `["**/*.test.{ts,tsx}"]` with `exclude: ["node_modules/**", ".next/**",
+   "out/**"]`. This alone took the suite from 5 files / 30 tests to 14
+   files / 44 tests, but exposed 8 failing files.
+2. **No path-alias resolution for Vitest.** `vitest.config.ts` had no
+   `resolve.alias`/tsconfig-paths plugin, so any test file importing via
+   `@/...` (e.g. `@/store/examStore`, `@/types`) failed at collection —
+   before any test in that file ran. This silently zeroed out 7 of the 8
+   failing files (0 assertions recorded, not test failures). Fixed by
+   installing `vite-tsconfig-paths` and adding
+   `plugins: [tsconfigPaths()]`. This alone took the suite to 14 files
+   collected / 86 tests actually running (up from 44), with 6 files still
+   failing on genuine now-visible test bugs.
+3. **No jsdom-environment default, and `useFullscreen.test.tsx` had no
+   `// @vitest-environment jsdom` pragma.** `HANDOFF.md`'s/the tech
+   reference's assumption that "component/hook tests need jsdom, already
+   declared per-file via pragmas" was **not actually true for every file**
+   — confirmed directly, not assumed. Fixed by setting
+   `environment: "jsdom"` as the project-wide default in
+   `vitest.config.ts` rather than relying on per-file pragmas.
+4. **No Vitest setup file — missing jest-dom matchers and no
+   `cleanup()` between tests.** This caused two distinct symptoms:
+   `Invalid Chai property: toBeInTheDocument` (jest-dom matchers not
+   registered in every file) and `Found multiple elements with the text:
+   ...` (DOM from one test bleeding into the next, since Vitest — unlike
+   Jest — does not auto-cleanup between tests). Fixed by creating
+   `vitest.setup.ts` (imports `@testing-library/jest-dom/vitest`, calls
+   `cleanup()` in a global `afterEach`) and wiring it via
+   `setupFiles: ["./vitest.setup.ts"]`. This took the suite from 6 failing
+   files / 20 failing tests to **4 failing files / 4 failing tests**.
+
+**Lesson (reinforcing the existing Milestone 8 postmortem and
+Milestone-9-fixes lesson above): a `vitest.config.ts` that only runs a
+subset of the repo's tests can hide multiple independent config bugs at
+once.** Fixing the `include` glob alone does not mean the newly-included
+tests are actually runnable — path aliasing, test environment, and test
+setup/matchers are three separate concerns that all silently no-op or
+misreport in different ways when missing, and each one only becomes
+visible after the previous one is fixed.
+
+**Current test status (as of this fix, `npm run build` passing):**
+14 test files collected, 10 passing / 4 failing; 86 individual tests,
+82 passing / 4 failing.
+
+**4 remaining failures — diagnosed but not yet fixed:**
+
+- `hooks/useBeforeUnloadGuard.test.tsx` — *"prevents default and sets
+  returnValue while mounted"*: `expected false to be ''`. Root cause is
+  almost certainly a jsdom limitation, not a hook bug — jsdom's plain
+  `Event` class does not implement `BeforeUnloadEvent`'s special
+  string-typed `returnValue`; assigning `e.returnValue = ''` gets coerced
+  to boolean `false` by jsdom's generic `Event.returnValue` setter. The
+  hook itself (`hooks/useBeforeUnloadGuard.ts`) correctly does
+  `e.returnValue = ''`, matching source. Likely fix: in the test, replace
+  the real `dispatchEvent`-based assertion with a manually constructed
+  event-like object (`Object.defineProperty` a plain object with a
+  writable `returnValue` that isn't boolean-coerced) so the assertion
+  reflects what the hook actually sets, rather than what jsdom's
+  incomplete `Event` implementation allows through.
+- `hooks/useKeyboardShortcuts.test.tsx` — *"+/- adjust font size, [ / ]
+  adjust per-slide count"*: `expected 5 to be 6` on the `]` (increment
+  per-slide) assertion. Likely cause: `perSlide` is clamped 2-5 (per
+  `MCQ_PROJECTOR_TECHNICAL_REFERENCE.md` §13's note on
+  `PER_SLIDE_MIN/MAX` living in `store/examStore.ts`), and the test's
+  captured `before` value from `startCalibration()`'s default state is
+  already at the clamp ceiling (5), so `adjustPerSlide(1)` is correctly a
+  no-op and the *test's* assumption (`before.perSlide + 1`) is wrong, not
+  the hook/store logic. Likely fix: have the test explicitly set
+  `config.perSlide` to a mid-range value (e.g. 3) via `useExamStore.setState`
+  before asserting the increment, rather than assuming whatever
+  `startCalibration()` defaults to has headroom.
+- `components/screens/MetaScreen/MetaScreen.test.tsx` — *"shows Quiz
+  number only when Exam name is 'Class Quiz'"*: `expect(element).not.toBeVisible()`
+  fails; the element is visible. Not yet source-diagnosed this session —
+  needs `MetaScreen.tsx`'s conditional-visibility logic (likely a CSS
+  `_hidden_` class toggle, given the class name in the failure output)
+  cross-checked against the test's setup.
+- `components/screens/SlideshowScreen/SlideshowScreen.test.tsx` — *"auto-starts
+  calibration on mount with 12 demo questions"*: text
+  `/Sample question 5 —/` not found. Not yet source-diagnosed this
+  session — needs `lib/demoQuestions.ts` and `SlideshowScreen.tsx`'s
+  rendering of calibration slides cross-checked against the test's
+  expected text pattern (possibly a text-splitting-across-elements issue,
+  which `screen.getByText` with a function matcher would fix if so).
+
+**Files changed this session:** `vitest.config.ts` (now includes
+`tsconfigPaths()` plugin, `environment: "jsdom"`, `setupFiles`), new
+`vitest.setup.ts`. New dev dependencies: `vite-tsconfig-paths`,
+confirmed-already-present `@testing-library/jest-dom`. Backups kept as
+`vitest.config.ts.bak` (pre-glob-fix), `.bak2` (pre-alias-fix), `.bak3`
+(pre-setup-file-fix).
+
+**Still outstanding:** fix the 4 diagnosed-above test failures; then
+resume Milestone 11 Script 5+ (cloud save/load UI wiring on
+`SetupScreen.tsx`) with a now-trustworthy test suite as a safety net.
+
+## Milestone 9 — Test suite fully green (2026-09-06, final)
+
+All 14 test files / 86 tests now pass, verified clean across 5 consecutive
+`npm run test` runs (no flakiness remaining), `npm run build` green. The
+last 3 fixes beyond the vitest.config.ts infrastructure work above:
+
+- `hooks/useBeforeUnloadGuard.test.tsx`: shadowed jsdom's boolean-coercing
+  `Event.returnValue` with an own writable property so the assertion
+  reflects what the hook actually assigns, not jsdom's incomplete
+  `BeforeUnloadEvent` support.
+- `hooks/useKeyboardShortcuts.test.tsx`: explicitly set `perSlide` to a
+  mid-range value (3) before the `]`/`[` increment/decrement assertions,
+  since the calibration default (5) already sat at the clamp ceiling.
+- `vitest.config.ts`: added `css: true` so CSS-Module class toggles (e.g.
+  MetaScreen's conditional `hidden` field) actually apply real styles in
+  jsdom, letting `toBeVisible()`/`not.toBeVisible()` work.
+- `components/screens/SlideshowScreen/SlideshowScreen.test.tsx`: root
+  cause was genuine flakiness, not a bug — `lib/shuffle.ts`'s `buildSet()`
+  intentionally randomizes question ORDER (not just option lettering) on
+  every call, including calibration, so the "auto-starts calibration on
+  mount" test's assumption of a fixed 1-12 order only held ~1/3 of runs.
+  Fixed by mocking `shuffle()` to an identity function for this test file
+  only — production behavior is untouched and working as designed.
+
+**Milestone 9 (Manual QA) is now unblocked by a fully trustworthy
+automated test suite.** Next: resume Milestone 11 Script 5+ (cloud
+save/load UI wiring on SetupScreen.tsx).
+
+## Correction to the previous "fully green" note (2026-09-06)
+
+The "Test suite fully green" note immediately above this one was written
+based on a verification loop that **never actually ran** -- a PowerShell
+scripting bug (`$i:` inside a double-quoted string was misparsed as a
+scope-qualified variable reference, e.g. like `$env:PATH`, causing a
+parser error) silently aborted the 5-run verification section before any
+iteration executed, but the script continued past the error using the
+loop's unchanged initial `$allClean = $true` value. **Lesson: a
+`ParserError` mid-script does not necessarily stop the whole script from
+completing and reporting success -- always check that a verification
+loop's own output (e.g. "Run 1 of 5...") actually appeared before trusting
+its conclusion.**
+
+Actual re-verification results are logged in the AI Feedback Summary for
+this fix. See that for the true current state of the SlideshowScreen fix.
+
+## SlideshowScreen fix, take 2 - still not clean (2026-09-06)
+
+The previous two notes in this file about the `SlideshowScreen.test.tsx`
+flake were both wrong: the first shuffle-mock fix didn't actually work
+(root cause: `buildSet()` calls `shuffle()` as an internal same-module
+reference, which `vi.mock()` cannot intercept — only external
+import-boundary calls are mockable), and the note claiming 5/5 clean runs
+was written before a scripting bug caused that verification loop to
+silently never execute.
+
+This session's fix mocks `buildSet` itself instead (the function
+`store/examStore.ts` actually imports externally), which is the
+correct interception point. However, actual re-verification below shows
+this is **still not fully clean** — needs further investigation before
+Milestone 9 can be considered unblocked.
+
+**Actual verification (5 consecutive `npm run test` runs):**
+  - Run 1: Passed=85 Failed=1
+  - Run 2: Passed=85 Failed=1
+  - Run 3: Passed=85 Failed=1
+  - Run 4: Passed=85 Failed=1
+  - Run 5: Passed=85 Failed=1
+
+All 5 runs clean: false. `npm run build` succeeded: True.
+
+**Status: NOT yet confirmed stable.** Do not mark Milestone 9's test
+suite as green until a future session re-diagnoses the remaining
+failure(s) using the exact failure messages logged in that session's
+terminal output.
+
+## SlideshowScreen fix, take 3 - genuinely verified this time (2026-09-06)
+
+Take 2's `buildSet` mock (correcting take 1's ineffective `shuffle`
+mock) was itself correct and DID work — it made the failure fully
+deterministic instead of randomly flaky, which was progress, but exposed
+a second, previously-hidden bug masked by the original randomness:
+`DEFAULT_CONFIG.numSets` is 2, so calibration renders two side-by-side
+columns. With `buildSet` now deterministic/unshuffled, both columns
+became byte-for-byte identical every run, so every demo question
+matched `getByText` twice, 100% of the time — a real duplicate-content
+bug in the test, previously hidden by set-shuffle randomness only
+sometimes producing visible duplicates.
+
+**Final fix:** force `numSets: 1` in this specific test (matching the
+pattern the file's own `numSets`-specific tests already use), since
+set-duplication behavior itself is already covered separately.
+
+**Actual verification (5 consecutive `npm run test` runs):**
+  - Run 1: Passed=86 Failed=0
+  - Run 2: Passed=86 Failed=0
+  - Run 3: Passed=86 Failed=0
+  - Run 4: Passed=86 Failed=0
+  - Run 5: Passed=86 Failed=0
+
+All 5 runs clean: true. `npm run build`: succeeded.
+
+**Confirmed status: all 14 test files / 86 tests pass, genuinely
+verified stable across three independent fix-and-reverify cycles this
+session.** Milestone 9 (Manual QA) is unblocked by a trustworthy
+automated suite. Next: resume Milestone 11 Script 5+ (cloud save/load UI
+wiring on SetupScreen.tsx).
+
+## Milestone 11 Script 5+ — Save/Load cloud UI wired on SetupScreen.tsx (2026-09-06)
+
+Added the previously-missing UI for the already-built cloud actions
+(`savePaperToCloud`, `refreshCloudPapers`, `loadPaperFromCloud` in
+`store/examStore.ts` / `lib/github.ts`), visible only when
+`cloudAuth` is set (i.e. signed in via `CloudAuthWidget` on
+`MetaScreen`):
+
+- **Save to cloud** button: re-parses the current textarea content (same
+  guard as "Build slideshow ->" — refuses to save with zero valid
+  questions), persists it to the store, then calls `savePaperToCloud()`.
+- **Load from cloud** toggle: opens a picker that calls
+  `refreshCloudPapers()` and lists `cloudPapers` (title / program /
+  subject / quiz number). Selecting one calls `loadPaperFromCloud(id)`.
+- Because this screen's fields (`rawInput`, `roomSize`, `perSlide`,
+  etc.) are local `useState` mirrors that only write to the store
+  one-way and never live-read it back, a cloud load re-syncs all of them
+  explicitly from `useExamStore.getState()` after the load resolves —
+  otherwise the screen would keep showing the pre-load values despite the
+  store being correctly updated underneath.
+
+New tests in `SetupScreen.test.tsx` cover: controls hidden when signed
+out, controls shown when signed in, Save-to-cloud success + empty-input
+guard, Load-from-cloud list refresh, and a full load cycle confirming the
+local fields are re-synced. These mock the store's cloud actions directly
+(`vi.fn()` overrides via `setState`) rather than mocking `fetch`,
+since the network layer itself is already covered by
+`lib/github.test.ts` — this suite is scoped to UI wiring only.
+
+**Verification (tsc + 5 consecutive `npm run test` runs + build):**
+  - Run 1: Passed=92 Failed=0
+  - Run 2: Passed=92 Failed=0
+  - Run 3: Passed=92 Failed=0
+  - Run 4: Passed=92 Failed=0
+  - Run 5: Passed=92 Failed=0
+
+tsc clean: true. All 5 runs clean: true. `npm run build`: succeeded.
+
+**Milestone 11 Script 5+ complete and verified.** Remaining Milestone 11
+scope (if any beyond this) and Milestone 9's outstanding manual browser
+check (`P` key mid-exam) are still open — see earlier sections of this
+file.
+
+## Milestone 12 — Planned: Google Sign-In for teachers (design only, 2026-09-06)
+
+Not started. Captured here so a future session (or a future script in this
+one) has a real plan instead of starting from zero. Motivation: every
+teacher already has a Google account, so Google Sign-In removes the one
+piece of friction Milestone 11 still has — creating a GitHub account and a
+fine-grained PAT.
+
+### The constraint that shapes everything here
+This app is a **static export with no backend** (see tech reference §2).
+Google's standard OAuth "Authorization Code" flow — the one most tutorials
+show — requires a server-side step to exchange the auth code for tokens
+using a **client secret**, because that secret must never reach the
+browser. That flow is not compatible with this app's static-export/
+offline-classroom-laptop model without adding a real backend, which would
+be a much bigger architectural change than Milestone 11's GitHub PAT
+approach.
+
+### The client-side-only path (recommended — mirrors Milestone 11's pattern)
+Google's **Identity Services** library supports a token-only OAuth flow
+(`google.accounts.oauth2.initTokenClient`) designed for pure client-side
+apps: it returns a short-lived **access token directly to the browser**,
+no client secret, no server. This is the same trust model already shipped
+for GitHub (credentials/tokens live only in the browser) — it's the
+natural Milestone 12 approach.
+
+What it would look like:
+- Teacher clicks "Sign in with Google" → Google's popup → app receives an
+  OAuth access token scoped to **`drive.file`** (the minimal Drive scope:
+  the app can only see/write files *it created*, never the teacher's whole
+  Drive — same minimal-scope philosophy as Milestone 11's "Contents-only,
+  one repo" PAT guidance).
+- App uses that token to call the Drive API directly from the browser to
+  read/write the same kind of payload Milestone 11 already defines
+  (`CloudSettingsPayload`, `SavedPaper`) — just stored as Drive app-data
+  files instead of GitHub repo files.
+- **Key difference from the PAT model:** this access token is short-lived
+  (~1 hour), not a long-lived credential. Two follow-on decisions needed
+  before implementation:
+  1. Silently re-request a token in the background when one expires
+     (`initTokenClient`'s callback can be re-invoked without a visible
+     popup in most cases), vs. surfacing a "session expired, sign in
+     again" state like `cloudStatus: 'error'` already supports.
+  2. Whether Google Sign-In becomes a **second provider alongside** GitHub
+     PAT (teacher picks either), or a **replacement**. Alongside is safer
+     for anyone already using Milestone 11 in production — no migration
+     needed, no data loss risk, and it fits this project's Contents-only-
+     one-repo-or-one-app-folder philosophy.
+
+### One-time setup this would require (teacher-facing docs to write later)
+- A Google Cloud project + OAuth Client ID (type: "Web application"),
+  with this app's GitHub Pages URL registered as an authorized JavaScript
+  origin. This is a one-time setup the *developer* does once (not per
+  teacher) — unlike the GitHub PAT model where each teacher creates their
+  own token, here there's one shared OAuth Client ID for the whole app,
+  and each teacher just clicks "Sign in with Google" individually.
+- No secret to protect, since the client-side token flow never uses one —
+  the OAuth Client ID itself is not sensitive and is safe to ship in the
+  static bundle.
+
+### Suggested next script when this is picked up
+A discovery script (same pattern as this session's Milestone 11
+discovery): confirm `google.accounts.oauth2` availability via CDN script
+tag, sketch a `CloudCredentials`-equivalent type for Google (`accessToken`,
+`expiresAt`, `email`), and a minimal `lib/googleDrive.ts` wrapper mirroring
+`lib/github.ts`'s shape (pure fetch-based, no store/localStorage access,
+trivially mockable) before touching the store or any UI.
+## Deploy log — 2026-09-06 22:22 UTC+5 (Milestone 11 Script 5+ live)
+
+Redeployed via `redeploy.ps1`: build succeeded, 35 files exported, pushed
+to `gh-pages` successfully. Live at
+`https://onlinezubair.github.io/exam-using-projector/`.
+
+**Scope of this deploy:** Milestone 11 Script 5+ (Save-to-cloud /
+Load-from-cloud UI on `SetupScreen.tsx`) only. `syncSettingsToCloud()` is
+NOT yet wired into the "Next ->" / "Build slideshow ->" call sites as of
+this deploy — that work is in progress now (see the entry immediately
+following this one, once it lands). A signed-in teacher's sticky settings
+will not auto-push to the cloud until the next deploy after that lands.
+## Milestone 11 — syncSettingsToCloud() wiring complete (2026-09-06)
+
+Wired the last outstanding piece of Milestone 11's code work:
+`syncSettingsToCloud()` now fires (fire-and-forget, no-op when signed
+out) immediately after both existing `commitLastSettings()` call sites:
+
+- `MetaScreen.tsx`'s "Next ->" handler
+- `SetupScreen.tsx`'s "Build slideshow ->" handler
+
+Deliberately NOT added to MetaScreen's "Skip ->" — matches
+`commitLastSettings()`'s own existing exclusion there (Skip never
+writes sticky settings locally or now to the cloud either).
+
+New tests confirm: called once when signed in on each site, never called
+from Skip, and no exception when signed out (action's internal
+`cloudAuth` check makes it a safe no-op).
+
+**Verification (tsc + 5 consecutive `npm run test` runs + build):**
+  - Run 1: Passed=97 Failed=0
+  - Run 2: Passed=97 Failed=0
+  - Run 3: Passed=97 Failed=0
+  - Run 4: Passed=97 Failed=0
+  - Run 5: Passed=97 Failed=0
+
+tsc clean: true. All 5 runs clean: true. `npm run build`: succeeded.
+
+**Milestone 11 code work is now fully complete.** Remaining scope is
+manual QA only (sign in with a real PAT, confirm `settings.json`/
+`papers/index.json` appear correctly on GitHub, confirm sign-out/no-login
+regression) — then redeploy via `redeploy.ps1`.
+## Milestone 11 manual QA — CloudAuthWidget visibility false alarm (2026-09-06)
+
+Widget appeared to be completely missing from the live site after the
+Script 5+ / syncSettingsToCloud deploys. Full diagnostic pass (source
+JSX placement, import style, theme.css variable definitions and import,
+gh-pages bundle contents) found **no code defect** — every check passed.
+Root cause was simply a **stale browser cache** on the live GitHub Pages
+URL. Confirmed resolved via hard refresh / incognito: the widget, its
+"Sign in ->" expand/collapse, and the PAT + repo-name form all render
+and read exactly as designed.
+
+**Lesson:** when a deployed static-export app "loses" a feature that
+diagnostics confirm is present in both source and the deployed bundle,
+check browser/CDN caching (hard refresh, incognito) *before* assuming a
+build or wiring bug — it is cheaper to rule out than a full code audit
+and was in fact the actual cause here.
+
+Milestone 11's GitHub-PAT sign-in flow itself is now confirmed visually
+functional. Remaining GitHub-PAT-specific manual QA (real PAT login,
+`settings.json`/`papers/index.json` appearing on GitHub, sign-out
+regression) is deprioritized per the decision below, not abandoned —
+still valid to run later if the GitHub-PAT path stays in the app.
+
+## Decision — prioritize Google Sign-In over GitHub PAT (2026-09-06)
+
+User preference: **Google Sign-In (Milestone 12) is now the preferred
+path**, over continuing to manually QA and rely on the GitHub PAT flow
+built in Milestone 11. Milestone 12's design section (further up this
+file) already lays out the client-side-only Google Identity Services
+approach (`initTokenClient`, `drive.file` scope, no backend/secret)
+compatible with this app's static-export model.
+
+**Open question carried into Milestone 12 implementation** (from that
+section's own "Key difference from the PAT model" note): whether Google
+Sign-In becomes a **second provider alongside** the existing GitHub PAT
+widget, or a **replacement** for it. Not yet decided here — flag this
+for explicit confirmation before implementation starts, since it
+determines whether `CloudAuthWidget.tsx` gains a provider choice or gets
+replaced outright, and whether Milestone 11's GitHub-PAT manual QA above
+is still worth finishing.
+
+**Next step:** start Milestone 12 per its existing "Suggested next
+script" (discovery script — confirm `google.accounts.oauth2` CDN
+availability, sketch `CloudCredentials`-equivalent Google type, minimal
+`lib/googleDrive.ts` wrapper — before touching store or UI).
+## Milestone 9 continued — 4 diagnosed test failures confirmed resolved (verification run)
+
+A fresh verification run (`tsc --noEmit` + `npm run test`, no code changes
+made this session) confirms all 4 test failures listed in the "Milestone 9
+continued — Test infrastructure fixes" section above are now fixed:
+
+- `hooks/useBeforeUnloadGuard.test.tsx` — already fixed (event's
+  `returnValue` shadowed via `Object.defineProperty` in the test harness,
+  matching the "likely fix" already sketched in that section).
+- `hooks/useKeyboardShortcuts.test.tsx` — already fixed (test now forces
+  `config.perSlide` to a mid-range value before asserting the `]`/`[`
+  increment/decrement, avoiding the clamp-ceiling false failure).
+- `components/screens/MetaScreen/MetaScreen.test.tsx` — confirmed passing;
+  `vitest.config.ts` already has `css: true`, so the CSS Modules
+  `display: none` rule genuinely applies in jsdom and `toBeVisible()`
+  correctly reflects it.
+- `components/screens/SlideshowScreen/SlideshowScreen.test.tsx` — confirmed
+  passing; the demo question text and its leading question-number `<span>`
+  render as separate text nodes as expected, and the regex text-match
+  assertions pass as written.
+
+**Result:** `tsc --noEmit` exit code 0, `npm run test` exit code 0, zero
+failing tests. No source or test files were changed to reach this state —
+a prior session's fixes had already landed correctly; only this file's
+status text was stale.
+
+**Lesson (reinforcing the postmortems already in this file):** always
+re-run the actual suite before writing a new patch for a "known failing"
+test — a stale status note can cost a redundant fix pass for a bug that
+no longer exists.
+## vitest.config.ts non-issue + regression-and-fix (2026-09-06)
+
+- A technical-reference document's claim that `vitest.config.ts`'s `include`
+  glob only matched `lib/**/*.test.ts` was **wrong/stale**. Direct inspection
+  of the actual original file showed it already had
+  `include: ["**/*.test.{ts,tsx}"]`, `environment: "jsdom"`,
+  `setupFiles: ["./vitest.setup.ts"]`, `css: true`, and
+  `plugins: [tsconfigPaths()]`. No fix was ever needed there.
+- An AI session (this one) trusted that stale claim without viewing the live
+  file first, and rewrote `vitest.config.ts` wholesale — which silently
+  dropped the `tsconfigPaths()` plugin (breaking `@/*` alias resolution:
+  `Cannot find package '@/store/examStore'`) and dropped
+  `jsdom`/`setupFiles`/`css` (breaking Testing Library's automatic
+  cleanup between tests, surfacing as `Found multiple elements` failures
+  across `MetaScreen`/`SetupScreen`/`SlideshowScreen` tests).
+- Root cause fully resolved by restoring the original `vitest.config.ts` from
+  the earliest pre-edit backup and merging in only an additional
+  `resolve.alias` block alongside the existing `tsconfigPaths()` plugin,
+  rather than rewriting the file again. Full suite now: 14 test files,
+  97 tests, all passing; `tsc --noEmit` clean.
+- **Lesson (reinforcing this file's own Milestone 8 postmortem): never
+  rewrite a config file based on a document's claim about its contents —
+  always `Get-Content` the live file first.** Same mistake, different file.
+
+## Milestone 12 — Google Sign-In: discovery + initial `lib/googleDrive.ts` implementation (2026-09-06)
+
+- **Decision: Google Sign-In will REPLACE the GitHub PAT flow entirely**
+  (not run alongside it). `CloudAuthWidget.tsx` rework and removal of
+  `lib/github.ts`/its tests have **not started yet** — this is a design
+  decision recorded ahead of implementation.
+- GSI CDN (`https://accounts.google.com/gsi/client`) confirmed reachable
+  (HTTP 200) via a browser-User-Agent request. An initial check without a
+  browser-like User-Agent returned "unreachable" — that was bot/User-Agent
+  filtering on Google's side, not a real outage. Noting this so a future
+  session doesn't mistake a naive scripted HEAD/GET check for ground truth
+  on Google endpoints.
+- Created `lib/googleDrive.ts`, mirroring `lib/github.ts`'s shape (pure
+  fetch-based, no store/localStorage access):
+  - `GoogleCredentials` (`accessToken`, `expiresAt`, `email`) and
+    `GoogleAuthResult` (`valid`, `email?`, `error?`) types defined locally —
+    deliberately NOT reusing GitHub's `GitHubAuthResult`, which is
+    GitHub-specific.
+  - `validateGoogleToken(token)` — **implemented for real**, using Google's
+    `oauth2/v3/tokeninfo` endpoint.
+  - `checkDriveAccess(token)` — **implemented for real**, using Drive's
+    `about?fields=user` endpoint with a Bearer header.
+  - `loadCloudSettings`, `saveCloudSettings`, `listCloudPapers`,
+    `loadCloudPaper`, `saveCloudPaper` — still stubs that throw; **not yet
+    implemented**.
+  - Imports `CloudCredentials`, `CloudSettingsPayload`, `PaperIndexEntry`,
+    `SavedPaper`, `ExamMeta`, `AppConfig` from `@/types`, exactly like
+    `lib/github.ts` does.
+- **Explicitly out of scope** for `lib/googleDrive.ts`: the
+  `google.accounts.oauth2.initTokenClient` popup-trigger flow itself. That's
+  browser-interactive UI and belongs in a future `GoogleAuthWidget`-equivalent
+  component (or a rework of `CloudAuthWidget.tsx`, given the "replace"
+  decision above) — matching how `lib/github.ts` never handles PAT-entry UI
+  either.
+- Verified: `tsc --noEmit` clean; full suite still 14/14 files, 97/97 tests
+  passing. No new tests added yet for `googleDrive.ts` — none of its
+  functions are currently exercised by the suite.
+
+### Suggested next script
+Either (a) write `lib/googleDrive.test.ts` mirroring `lib/github.test.ts`'s
+mocked-`fetch` pattern to cover `validateGoogleToken`/`checkDriveAccess`; or
+(b) implement the five remaining Drive read/write stubs. UI wiring
+(`initTokenClient`, `CloudAuthWidget.tsx` rework/replacement) should wait
+until the lib layer is fully implemented and tested — consistent with this
+project's lib-first, store/UI-last sequencing used for Milestone 11.
+## Milestone 12 — googleDrive.ts read/write implementation complete (2026-09-06)
+
+The 5 remaining stubs in `lib/googleDrive.ts` (`loadCloudSettings`,
+`saveCloudSettings`, `listCloudPapers`, `loadCloudPaper`,
+`saveCloudPaper`) are now implemented for real, plus `lib/googleDrive.test.ts`
+(12 tests, mocked-`fetch` pattern mirroring `lib/github.test.ts`).
+
+**Bug fixed during this pass:** the Milestone 12 scaffold's stub signatures
+imported and used `CloudCredentials` (GitHub's `{ token, username, repo }`
+shape) from `@/types` instead of this file's own `GoogleCredentials`
+(`{ accessToken, expiresAt, email }`) — a copy-paste artifact from mirroring
+`lib/github.ts` too literally. Corrected before any UI ever called these
+functions with the wrong shape.
+
+**Design departure from `lib/github.ts` (deliberate, not a mistake):**
+Drive has no repo/path model the way GitHub's Contents API does — Drive is
+flat, files are found by `name`+`parent` query, not fetched by path. So
+this file has its own primitives (`ensureAppFolder`, `findFileByName`,
+`createJsonFile` via multipart POST, `updateJsonFile` via media PATCH)
+rather than porting `getJsonFile`/`putJsonFile` literally. Data layout:
+one Drive folder named `MCQ Projector Data` holds `settings.json`,
+`papers-index.json`, and one `paper-<uuid>.json` per saved paper — the
+flat-file equivalent of Milestone 11's `settings.json`/`papers/index.json`/
+`papers/<uuid>.json` GitHub repo layout.
+
+**Trade-off noted deliberately:** every exported function calls
+`ensureAppFolder()` itself rather than caching a folder ID across calls,
+since this file has no persistent state by design (matches `lib/github.ts`'s
+own no-store/no-localStorage rule). Acceptable extra round trip for a
+single-teacher classroom laptop doing occasional saves.
+
+**Verification:** `tsc --noEmit` clean; `npm run test`: 15 test files,
+109 tests, all passing (12 of them new, in `lib/googleDrive.test.ts`);
+`npm run build`: succeeded.
+
+**Still not started:** the `google.accounts.oauth2.initTokenClient` popup-
+trigger flow itself, and the `GoogleAuthWidget`-equivalent UI component.
+Per the Milestone 12 decision already recorded in this file, Google Sign-In
+will **replace** `CloudAuthWidget.tsx`'s GitHub PAT flow entirely — that
+rework has not started. `lib/github.ts` and `lib/github.test.ts` are still
+in place and still used by the current `CloudAuthWidget.tsx`; do not remove
+them until the replacement UI actually lands and is verified.
+
+**Tooling note (reinforcing this file's own earlier "Tooling lesson"):**
+an AI session hit the exact same class of bug this file already documents
+— building this very entry with a double-quoted PowerShell string array
+containing backtick-wrapped code spans threw a parser error, since
+backtick is PowerShell's escape character even in that context. Fixed by
+switching to a single-quoted `@'...'@` here-string (no escape processing)
+with placeholder substitution afterward, rather than trying to escape the
+backticks. Second confirmation this project should never build
+backtick-heavy markdown content via double-quoted PowerShell strings.
+
+### Suggested next script
+UI wiring: (a) confirm `google.accounts.oauth2` availability via a real
+browser load of the GSI CDN script (not a scripted HEAD/GET — see the
+User-Agent-filtering note already in this file), then (b) build the
+`initTokenClient`-based sign-in flow and rework `CloudAuthWidget.tsx` to
+call it instead of the GitHub PAT form, keeping the same `cloudAuth`/
+`cloudStatus`/`cloudError` store slice shape so `SetupScreen.tsx`'s
+Save/Load-to-cloud UI needs no changes beyond the auth widget itself.
+
+## Post-Milestone-9 fixes, part 2 — mid-exam Print backup button (2026-09-06)
+
+Direct source verification (cross-checked against `MCQ_PROJECTOR_TECHNICAL_REFERENCE.md`
+§11 point 2) found the mid-exam "Print backup" button in `Bottombar.tsx`
+was still hardcoded `disabled`, with the stale title
+`"Emergency paper backup — Milestone 6b"`, despite `usePrintBackup()`
+already being imported and destructured as `triggerPrint` in the same file.
+This was NOT caught by the original Post-Milestone-9 fixes entry above,
+which only covered the keyboard `P` binding and the autosave/last-settings
+mount wiring — the toolbar button itself was a separate, still-open gap.
+
+**Fix:** changed the button to
+`<button onClick={triggerPrint} title="Emergency paper backup (P)">Print backup</button>`,
+removing `disabled` and wiring the existing `triggerPrint` callback.
+
+**Verification:** `tsc --noEmit` clean; `npm run test`: 15 test files, all
+passing (full suite, per the earlier vitest.config.ts fix); `npm run build`:
+succeeded.
+
+**Still outstanding from Milestone 9:** browser-level manual check that
+pressing `P` mid-exam (keyboard path) shows a no-answers print preview and
+leaves the running timer untouched underneath. The mid-exam **button** path
+is now also wired and should be included in that same manual check.
+## Milestone 12 — Step 1 discovery: undocumented prior work + a real break it left (2026-09-06)
+
+An AI session began Milestone 12 UI wiring (Google Sign-In) by planning a
+"Step 1/6" to create `lib/googleAuthConfig.ts` and move
+`GoogleCredentials`/`GoogleAuthResult` into `types/index.ts`. Direct
+`Test-Path`/grep discovery showed **all of this already existed, verbatim**,
+from an earlier, entirely undocumented session — neither this file nor
+`MCQ_PROJECTOR_TECHNICAL_REFERENCE.md` had ever recorded it. Reinforces
+this file's own repeated lesson: always re-discover live file state before
+planning any edit, never trust a milestone table or a prior session summary.
+
+**Real bug found during the same discovery pass:** `lib/googleDrive.test.ts`
+still imported `GoogleCredentials` from `'./googleDrive'` (a local-export
+expectation), but `googleDrive.ts` had already been changed to import that
+type from `'@/types'` instead of declaring it locally, and never re-exports
+it. `npm run test` passed 15/15 anyway, because Vitest transpiles via esbuild
+and does not type-check — only `tsc --noEmit` caught the break
+(`TS2459: Module './googleDrive' declares 'GoogleCredentials' locally, but
+it is not exported.`).
+
+**Fix:** changed the test file's import specifier from `'./googleDrive'` to
+`'@/types'` for `GoogleCredentials`, keeping the same imported name(s).
+
+**Verification:** `tsc --noEmit` clean; `npm run test`: 15 test files, all
+passing.
+
+**Lesson for this Milestone 12 effort specifically:** `npm run test`
+passing is not sufficient evidence that a types-only refactor (like moving
+a type from a lib file into `@/types`) is safe — `tsc --noEmit` must be run
+separately and explicitly after any such move, every time, for the rest of
+this milestone's UI wiring work.
+
+**Milestone 12 status after this fix:** the "Step 1" groundwork (config
+constants file + canonical types + `googleDrive.ts` importing from
+`@/types`) is confirmed complete and green. Still not started: `app/layout.tsx`
+GSI script tag, `store/examStore.ts` swap from `lib/github` to
+`lib/googleDrive` + `cloudAuth` retyping, `lib/storage.ts` cloud-auth
+retyping (+ localStorage key bump, since the old key holds GitHub-shaped
+data), `CloudAuthWidget.tsx` rework, and final cleanup of `lib/github.ts`.
+## Milestone 12 — UI wiring progress: Steps 1-3 complete (2026-09-06)
+
+Full sequence so far, each step verified with `tsc --noEmit` + `npm run test`
+before moving to the next:
+
+**Step 1 (confirmed already done by an undocumented prior session, see the
+entry above this one):** `lib/googleAuthConfig.ts` (placeholder
+`GOOGLE_CLIENT_ID`, `GOOGLE_DRIVE_SCOPE`, `GSI_SCRIPT_URL`);
+`GoogleCredentials`/`GoogleAuthResult` moved into `types/index.ts` as the
+canonical source; `lib/googleDrive.ts` importing both from `@/types`. A
+real break this left behind (`lib/googleDrive.test.ts` still importing
+`GoogleCredentials` from `./googleDrive`) was found and fixed in that same
+pass.
+
+**Step 2:** `lib/storage.ts`'s `readCloudAuth`/`writeCloudAuth`/
+`clearCloudAuthStorage` retyped from `CloudCredentials` to
+`GoogleCredentials`. `CLOUD_AUTH_KEY` bumped `mcqProjectorCloudAuth_v1` ->
+`_v2`, since the v1 key holds GitHub-shaped data (`{ token, username, repo }`)
+that would otherwise silently misparse as `GoogleCredentials`
+(`{ accessToken, expiresAt, email }`) for any teacher with a v1 value
+already cached in their browser.
+
+**Step 3:** `store/examStore.ts` — swapped `lib/github` imports for
+`lib/googleDrive`; `cloudAuth` state retyped to `GoogleCredentials | null`;
+`initCloudAuth()` now also discards an expired cached token (Google's
+implicit-flow access token has no silent refresh and expires in ~1hr,
+unlike the old GitHub PAT which never expired — a stale cached token is
+worse than no cached token, since it would surface as a confusing
+"signed in" state that fails on the first real request); `loginToCloud`
+rewritten to take `(accessToken, expiresInSeconds)` from Google's token
+client response instead of `(token, repo?)`, calling
+`validateGoogleToken()` then `checkDriveAccess()` in place of
+`validateGitHubToken()` then `checkRepoAccess()`.
+
+**Step 3b:** fixed the three downstream consumers `tsc` flagged after
+Step 3's retyping: `SetupScreen.tsx`'s signed-in label changed from
+`cloudAuth.username` to `cloudAuth.email` (Google has no username concept);
+`SetupScreen.test.tsx` and `MetaScreen.test.tsx`'s `testCloudAuth` mock
+objects changed from the GitHub shape (`{ token, username, repo }`) to the
+Google shape (`{ accessToken, expiresAt, email }`).
+
+**Verification after Step 3b:** `npm run test` full suite passing.
+`tsc --noEmit`'s only remaining errors are confined to
+`CloudAuthWidget.tsx`/`CloudAuthWidget.test.tsx` — expected, since that
+component still has the old PAT-entry form and hasn't been reworked yet.
+That rework is Step 4, deliberately done last among the source changes so
+every other file already compiles cleanly against the new
+`GoogleCredentials` shape first.
+
+**Still not started:** Step 4 (`CloudAuthWidget.tsx` full rework to a
+"Sign in with Google" button wired to `google.accounts.oauth2.initTokenClient`,
+plus its test file rewritten for the new flow, plus `app/layout.tsx` gaining
+a `<Script src={GSI_SCRIPT_URL}>` tag); Step 5 (live manual sign-in test
+against a real Google OAuth Client ID — user has not yet created one, see
+Google Cloud Console walkthrough already given in-session); Step 6
+(remove `lib/github.ts`/`lib/github.test.ts` and the now-fully-unused
+`CloudCredentials`/`DEFAULT_CLOUD_REPO`, only after Step 4/5 are verified
+working end-to-end, per this file's own standing caution about not
+removing the GitHub flow before its replacement lands).
+## Milestone 13 — Pre-exam set lock + ZipGrade-compatible auto-export (2026-09-07)
+
+New requirement: once a teacher finishes Setup (questions + config) and clicks
+"Build slideshow ->", the real scrambled sets should be generated and frozen
+immediately, announced to the teacher as locked, and the answer-key CSV +
+per-set question-paper HTML should auto-download right then — all *before*
+the calibration/font-size screen appears. Today's flow instead builds real
+sets and offers export only at EndScreen, after the exam is already over.
+
+**Steps 1-3 done and verified, store/lib layer only (no UI yet):**
+
+1. **	ypes/index.ts**: Screen union gained 'locked' (between 'setup'
+   and 'show'). ExamApp.tsx's screen switch has a default case, so this
+   compiles clean today even with no LockedScreen component yet — it just
+   falls through to <div>Unknown screen</div> until Step 4 wires it in.
+2. **store/examStore.ts**: added locked: boolean,
+   lockedMasterQuestions: Question[], lockedSets: SetQuestion[][].
+   New generateAndLockSets() builds config.numSets real shuffled sets
+   from pendingQuestions and freezes them into the two locked fields —
+   this is the logic eginRealExam() used to do at "Start Exam" time, now
+   moved to right after Setup's "Build slideshow ->" instead. New
+   egenerateSets() is a window.confirm()-gated re-shuffle (warns that
+   already-downloaded files become invalid) that just calls
+   generateAndLockSets() again. **eginRealExam() no longer builds
+   sets itself** — it now reads lockedMasterQuestions/lockedSets
+   directly, so the exam students actually see is guaranteed
+   byte-identical to whatever was already exported at lock time (calibration
+   mode still overwrites the working masterQuestions/sets fields with
+   demo data in between; eginRealExam() restores the real locked ones on
+   top of that).
+3. **lib/zip.ts**: uildAnswerKeyCSV() rewritten to match ZipGrade's
+   actual published CSV import format (checked directly against
+   support.zipgrade.com's spec, not assumed) — 5 columns
+   (Key Letter,Question Number,Response/Mapping,Point Value,Tags), no
+   leading comment/metadata line (a non-Key-prefixed first line risks
+   failing ZipGrade's import validation), and the Response/Mapping field
+   now holds the plain answer letter instead of the old debug string
+   ("Q5 → B"). Two real bugs fixed here, not just a reformat: the old
+   6-column Correct Marks,Incorrect Marks shape didn't match ZipGrade at
+   all, and the debug mapping string was never a valid response value.
+   Negative marking (config.marksIncorrect !== 0) is now expressed the
+   way ZipGrade's format actually supports it — an extra row per question
+   with the literal response [a&i] ("Attempted, but Incorrect") and that
+   row's Point Value set to marksIncorrect. Omitted entirely when
+   marksIncorrect === 0 (the default), so today's typical export is
+   unchanged in row count. uildExportZip()'s one call site updated to
+   match the new 3-arg signature (metaHeader param dropped, since the
+   comment line it fed is gone).
+4. **lib/zip.test.ts**: old 2-test CSV block replaced with 3 tests
+   covering the new header, the plain-letter/Point-Value row shape with no
+   [a&i] row at the default marksIncorrect: 0, and the [a&i] row
+   appearing correctly when marksIncorrect is non-zero.
+
+**Verification:** 
+px vitest run lib/zip.test.ts — 4/4 passing (the 3 new
+CSV tests + the untouched uildQuestionPaperHTML test). 
+px tsc --noEmit
+— same 4 pre-existing errors as before this work started, all confined to
+components/CloudAuthWidget.tsx/.test.tsx (Milestone 12 Step 4, GitHub-PAT
+shaped code never reworked to GoogleCredentials — untouched by this
+change, left alone deliberately per teacher's explicit go-ahead).
+
+**Still not started (Step 4):** a new LockedScreen component — modal
+announcing "Sets locked, files downloaded" with a **Continue ->** button
+(routes to today's existing calibration screen, unchanged) and a
+**Regenerate Sets** button wired to egenerateSets(); the auto-download
+trigger itself (reusing uildExportZip(), fired once when
+generateAndLockSets() runs, single zip so no multi-download popup
+blocking); wiring screen: 'locked' + the generateAndLockSets() call into
+SetupScreen.tsx's handleBuild() in place of the current direct
+setScreen('show'); and adding the 'locked' case to ExamApp.tsx's
+screen switch.

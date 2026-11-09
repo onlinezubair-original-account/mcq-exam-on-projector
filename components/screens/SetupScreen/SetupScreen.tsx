@@ -37,6 +37,14 @@ function downloadTextFile(filename: string, text: string) {
 // perSlide via PERSLIDE_BY_SETS on change (source has no "already
 // overridden by teacher" tracking, despite plan Section 2.4's description —
 // ground truth is the source, per project convention).
+//
+// Milestone 11 Script 5+: adds Save-to-cloud / Load-from-cloud controls,
+// visible only when signed in (CloudAuthWidget, on MetaScreen, owns
+// sign-in/out). This screen's roomSize/perSlide/etc fields are local
+// useState mirrors of the store, written to the store one-way (see
+// persistFieldsToStore) — they do NOT live-read the store after mount, so
+// a cloud-loaded paper's fields are re-synced explicitly in
+// handleLoadFromCloud rather than relying on the store write alone.
 export function SetupScreen() {
   const setScreen = useExamStore((s) => s.setScreen);
   const storedConfig = useExamStore((s) => s.config);
@@ -44,6 +52,16 @@ export function SetupScreen() {
   const setConfigInStore = useExamStore((s) => s.setConfig);
   const setRawInputInStore = useExamStore((s) => s.setRawInput);
   const setPendingQuestionsInStore = useExamStore((s) => s.setPendingQuestions);
+  const generateAndLockSets = useExamStore((s) => s.generateAndLockSets);
+
+  const cloudAuth = useExamStore((s) => s.cloudAuth);
+  const cloudStatus = useExamStore((s) => s.cloudStatus);
+  const cloudError = useExamStore((s) => s.cloudError);
+  const cloudPapers = useExamStore((s) => s.cloudPapers);
+  const savePaperToCloud = useExamStore((s) => s.savePaperToCloud);
+  const refreshCloudPapers = useExamStore((s) => s.refreshCloudPapers);
+  const loadPaperFromCloud = useExamStore((s) => s.loadPaperFromCloud);
+  const syncSettingsToCloud = useExamStore((s) => s.syncSettingsToCloud);
 
   const [rawInput, setRawInput] = useState(storedRawInput);
   const [roomSize, setRoomSize] = useState<AppConfig['roomSize']>(storedConfig.roomSize);
@@ -53,6 +71,9 @@ export function SetupScreen() {
   const [marksCorrect, setMarksCorrect] = useState(storedConfig.marksCorrect);
   const [marksIncorrect, setMarksIncorrect] = useState(storedConfig.marksIncorrect);
   const [parseMsg, setParseMsg] = useState<{ text: string; kind: 'ok' | 'err' | '' }>({ text: '', kind: '' });
+  const [cloudPickerOpen, setCloudPickerOpen] = useState(false);
+
+  const cloudBusy = cloudStatus === 'checking' || cloudStatus === 'syncing';
 
   // Milestone 7: debounced autosave trigger on rawInput + every Setup
   // config field change (HANDOFF Section 11). Skips the very first run so
@@ -141,11 +162,112 @@ export function SetupScreen() {
     // Section 11.
     saveAutosave();
     commitLastSettings(useExamStore.getState().meta, finalConfig);
+    // Milestone 11: push the same sticky settings to the cloud repo, if
+    // signed in. Fire-and-forget, same reasoning as MetaScreen's "Next ->".
+    void syncSettingsToCloud();
 
-    // Milestone 5 replaces the 'show' placeholder with the real
-    // calibration screen; the store now holds everything it needs.
-    setScreen('show');
+    // Milestone 13: freeze the real scrambled sets right now (from the
+    // config/questions just committed above) and route to the Locked
+    // screen, which auto-downloads the answer key + question papers
+    // before the teacher ever reaches calibration. beginRealExam() later
+    // reads these same frozen fields rather than re-shuffling, so
+    // whatever gets downloaded here stays byte-identical to what
+    // students see.
+    generateAndLockSets();
+    setScreen('locked');
   }
+
+  // Milestone 11 Script 5+: parses whatever is currently in the textarea
+  // (independent of whether "Build" was ever clicked) and pushes it to the
+  // teacher's cloud repo as a new paper. Mirrors handleBuild's parse-guard
+  // but deliberately does NOT navigate away or apply ROOM_PRESETS — saving
+  // is a side action, not exam start.
+  async function handleSaveToCloud() {
+    const parsed = parseQuestions(rawInput);
+    if (parsed.questions.length === 0) {
+      setParseMsg({
+        kind: 'err',
+        text: 'No valid questions found — nothing to save to the cloud yet.',
+      });
+      return;
+    }
+
+    persistFieldsToStore(rawInput);
+    setPendingQuestionsInStore(parsed.questions, {
+      skipped: parsed.skipped,
+      invalidAnswers: parsed.invalidAnswers,
+    });
+
+    await savePaperToCloud();
+    const latestError = useExamStore.getState().cloudError;
+    setParseMsg(
+      latestError
+        ? { kind: 'err', text: latestError }
+        : { kind: 'ok', text: 'Saved to cloud.' }
+    );
+  }
+
+  async function handleTogglePicker() {
+    const next = !cloudPickerOpen;
+    setCloudPickerOpen(next);
+    if (next) {
+      await refreshCloudPapers();
+    }
+  }
+
+  // Re-syncs this screen's local field mirrors from the store after a
+  // cloud load, since loadPaperFromCloud only writes the store (see
+  // store/examStore.ts) and this component doesn't otherwise re-read it
+  // post-mount.
+  async function handleLoadFromCloud(id: string) {
+    await loadPaperFromCloud(id);
+    const state = useExamStore.getState();
+    if (state.cloudError) {
+      setParseMsg({ kind: 'err', text: state.cloudError });
+      return;
+    }
+    setRawInput(state.rawInput);
+    setRoomSize(state.config.roomSize);
+    setPerSlide(state.config.perSlide);
+    setSecsPerQ(state.config.secsPerQ);
+    setNumSets(state.config.numSets);
+    setMarksCorrect(state.config.marksCorrect);
+    setMarksIncorrect(state.config.marksIncorrect);
+    setParseMsg({
+      kind: 'ok',
+      text: `Loaded "${state.meta.examName || 'Untitled paper'}" from the cloud.`,
+    });
+    setCloudPickerOpen(false);
+  }
+
+  const cloudBoxStyle = {
+    background: 'var(--board-dark)',
+    border: '1px solid var(--rule)',
+    borderRadius: 8,
+    padding: '10px 14px',
+    marginBottom: 20,
+    fontSize: 14,
+    color: 'var(--chalk)',
+  };
+  const cloudBtnStyle = {
+    background: 'transparent',
+    color: 'var(--accent)',
+    border: '1px solid var(--rule)',
+    borderRadius: 6,
+    padding: '4px 12px',
+    cursor: 'pointer',
+    fontWeight: 600,
+    fontFamily: 'inherit',
+    fontSize: 13,
+  };
+  const cloudPaperRowStyle = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    padding: '6px 0',
+    borderBottom: '1px solid var(--rule)',
+  };
 
   return (
     <div className={styles.screen}>
@@ -160,6 +282,66 @@ export function SetupScreen() {
         <p className={styles.sub}>
           Paste your question bank once, set a few options, then project full-screen. No printing needed.
         </p>
+
+        {cloudAuth && (
+          <div style={cloudBoxStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <span style={{ color: 'var(--chalk-dim)' }}>
+                Signed in as <strong>{cloudAuth.email}</strong> — save this paper or load a previous one.
+              </span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={handleSaveToCloud}
+                  disabled={cloudBusy}
+                  style={{ ...cloudBtnStyle, opacity: cloudBusy ? 0.6 : 1 }}
+                >
+                  {cloudStatus === 'syncing' ? 'Saving…' : '☁ Save to cloud'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleTogglePicker}
+                  disabled={cloudBusy}
+                  style={{ ...cloudBtnStyle, opacity: cloudBusy ? 0.6 : 1 }}
+                >
+                  {cloudPickerOpen ? 'Hide cloud papers' : '☁ Load from cloud'}
+                </button>
+              </div>
+            </div>
+
+            {cloudPickerOpen && (
+              <div style={{ marginTop: 10 }}>
+                {cloudStatus === 'syncing' && (
+                  <div style={{ color: 'var(--chalk-dim)' }}>Loading papers…</div>
+                )}
+                {cloudStatus !== 'syncing' && cloudPapers.length === 0 && (
+                  <div style={{ color: 'var(--chalk-dim)' }}>No saved papers in this repo yet.</div>
+                )}
+                {cloudPapers.map((p) => (
+                  <div key={p.id} style={cloudPaperRowStyle}>
+                    <span>
+                      <strong>{p.title}</strong>{' '}
+                      <span style={{ color: 'var(--chalk-dim)' }}>
+                        ({p.program || '—'} / {p.subject || '—'}
+                        {p.quizNumber !== '' ? ` / Quiz ${p.quizNumber}` : ''})
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleLoadFromCloud(p.id)}
+                      disabled={cloudBusy}
+                      style={{ ...cloudBtnStyle, opacity: cloudBusy ? 0.6 : 1 }}
+                    >
+                      Load
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {cloudError && <div style={{ color: 'var(--danger)', marginTop: 8 }}>{cloudError}</div>}
+          </div>
+        )}
 
         <div className={styles.field}>
           <label className={styles.label} htmlFor="rawInput">1. Paste your questions</label>
@@ -292,8 +474,9 @@ export function SetupScreen() {
 
         <button className={styles.primaryBtn} onClick={handleBuild}>Build slideshow →</button>
         <div className={styles.help} style={{ marginTop: 8 }}>
-          Clicking this opens a <b>calibration screen</b> with sample questions first — adjust font size and layout,
-          then start the real timed exam when ready.
+          Clicking this locks in your scrambled sets and downloads the answer key + question papers, then opens a{' '}
+          <b>calibration screen</b> with sample questions — adjust font size and layout, then start the real timed
+          exam when ready.
         </div>
         {parseMsg.text && (
           <div className={`${styles.parseMsg} ${parseMsg.kind === 'err' ? styles.err : parseMsg.kind === 'ok' ? styles.ok : ''}`}>
