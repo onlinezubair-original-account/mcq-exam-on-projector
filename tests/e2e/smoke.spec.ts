@@ -14,7 +14,8 @@ test.describe('Smoke test', () => {
     await page.goto('/');
     await expect(page.locator('h1')).toContainText(/Exam details/);
     await page.click('button:has-text("Skip")');
-    await expect(page.locator('h1')).toContainText(/Setup/);
+    // Setup screen title (source: SetupScreen.tsx line 281)
+    await expect(page.locator('h1')).toContainText(/MCQ Projector \u2014 Exam Display/);
 
     expect(requests, 'No external requests should leave the origin').toHaveLength(0);
   });
