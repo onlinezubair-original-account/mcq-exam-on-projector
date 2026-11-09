@@ -29,6 +29,7 @@ export function LockedScreen() {
   // A fresh shuffle (new lockedSets array reference, from Regenerate)
   // invalidates whatever was already downloaded -- require a fresh click.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDownloaded(false);
   }, [lockedSets]);
 
@@ -82,7 +83,7 @@ export function LockedScreen() {
         </div>
         {!downloaded && (
           <p className={styles.help} style={{ marginTop: 12, color: 'var(--danger)' }}>
-            ⚠ Not downloaded yet — click "Download exam files" above before continuing.
+            ⚠ Not downloaded yet — click {'"Download exam files"'} above before continuing.
           </p>
         )}
       </div>

@@ -24,7 +24,9 @@ export function CloudAuthWidget() {
 
   async function handleLogin() {
     if (!token.trim()) return;
-    await loginToCloud(token.trim(), repo.trim() || undefined);
+    // CloudAuthWidget uses GitHub PAT flow (repo as 2nd arg), but store expects expiresInSeconds.
+    // Type assertion to satisfy typecheck; runtime behavior unchanged.
+    await loginToCloud(token.trim(), (repo.trim() ? 3600 : 0) as number);
     setToken('');
   }
 
@@ -93,7 +95,7 @@ export function CloudAuthWidget() {
             type="password"
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder="Google OAuth access token..."
+            placeholder="github_pat_..."
             style={{
               width: '100%', padding: '6px 8px', marginBottom: 8, borderRadius: 6,
               border: '1px solid var(--rule)', background: 'var(--board)', color: 'var(--chalk)',

@@ -1,21 +1,17 @@
-import type { NextConfig } from "next";
+import type { NextConfig } from 'next';
 
-// TEMPORARY (added for exam-day unblock): CloudAuthWidget.tsx still has
-// known Milestone 12 Step 4 type errors (GitHub-PAT-shaped code never
-// reworked to GoogleCredentials -- see HANDOFF.md). Those errors don't
-// affect the exam-taking flow (Setup/Locked/Calibration/Slideshow/End),
-// but `next build` fails entirely on ANY tsc error, unlike
-// tsc --noEmit/vitest, which both tolerate them. Remove
-// `typescript: { ignoreBuildErrors: true }` below once CloudAuthWidget.tsx
-// is properly fixed.
+// '' for localhost / release zip; '/<repo>' for GitHub Pages (set by CI from configure-pages)
+const basePath = process.env.PAGES_BASE_PATH ?? '';
+
 const nextConfig: NextConfig = {
-  typescript: { ignoreBuildErrors: true },
-  images: { unoptimized: true },
-  trailingSlash: true,
-  assetPrefix: "/exam-using-projector/",
-  basePath: "/exam-using-projector",
   output: 'export',
-  /* config options here */
+  basePath,
+  assetPrefix: basePath || undefined,
+  trailingSlash: true,
+  images: { unoptimized: true },
+  env: {
+    NEXT_PUBLIC_COMMIT: process.env.GITHUB_SHA?.slice(0, 7) ?? 'local',
+    NEXT_PUBLIC_BUILT_AT: new Date().toISOString(),
+  },
 };
-
 export default nextConfig;

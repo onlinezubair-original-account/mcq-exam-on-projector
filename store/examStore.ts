@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ExamMeta, Screen, AppConfig, Question } from '@/types';
+import type { ExamMeta, Screen, AppConfig, Question, CloudCredentials } from '@/types';
 import { DEFAULT_META, DEFAULT_CONFIG } from '@/types';
 import { buildSet, type SetQuestion } from '@/lib/shuffle';
 import { buildDemoQuestions } from '@/lib/demoQuestions';
@@ -17,6 +17,10 @@ import {
   saveCloudPaper,
   loadCloudPaper,
 } from '@/lib/googleDrive';
+
+function isGoogleCredentials(creds: GoogleCredentials | CloudCredentials | null): creds is GoogleCredentials {
+  return !!creds && 'accessToken' in creds && 'expiresAt' in creds && 'email' in creds;
+}
 
 interface ParseWarnings {
   skipped: string[];
@@ -127,8 +131,9 @@ interface ExamStoreState {
   // ---- Persistence / crash-recovery (Milestone 7) ----
   resumeData: AutosavePayload | null;
 
-  // ---- Cloud sync (Milestone 11) ----
-  cloudAuth: GoogleCredentials | null;
+  // ---- Cloud sync (Milestone 11/12) ----
+  // Supports both Milestone 11 (GitHub PAT) and Milestone 12 (Google OAuth) shapes
+  cloudAuth: GoogleCredentials | CloudCredentials | null;
   cloudStatus: 'idle' | 'checking' | 'syncing' | 'error';
   cloudError: string | null;
   cloudPapers: PaperIndexEntry[];
@@ -564,7 +569,7 @@ export const useExamStore = create<ExamStoreState>((set, get) => ({
 
   syncSettingsToCloud: async () => {
     const { cloudAuth, meta, config } = get();
-    if (!cloudAuth) return;
+    if (!cloudAuth || !isGoogleCredentials(cloudAuth)) return;
     set({ cloudStatus: 'syncing' });
     try {
       const stickyMeta: Omit<ExamMeta, 'date' | 'dateManuallySet'> = {
@@ -586,7 +591,7 @@ export const useExamStore = create<ExamStoreState>((set, get) => ({
 
   loadSettingsFromCloud: async () => {
     const { cloudAuth } = get();
-    if (!cloudAuth) return;
+    if (!cloudAuth || !isGoogleCredentials(cloudAuth)) return;
     set({ cloudStatus: 'syncing' });
     try {
       const payload: CloudSettingsPayload | null = await loadCloudSettings(cloudAuth);
@@ -604,7 +609,7 @@ export const useExamStore = create<ExamStoreState>((set, get) => ({
 
   savePaperToCloud: async () => {
     const { cloudAuth, meta, config, rawInput, pendingQuestions } = get();
-    if (!cloudAuth) return;
+    if (!cloudAuth || !isGoogleCredentials(cloudAuth)) return;
     set({ cloudStatus: 'syncing' });
     try {
       const saved: SavedPaper = await saveCloudPaper(cloudAuth, { meta, config, rawInput, questions: pendingQuestions });
@@ -631,7 +636,7 @@ export const useExamStore = create<ExamStoreState>((set, get) => ({
 
   refreshCloudPapers: async () => {
     const { cloudAuth } = get();
-    if (!cloudAuth) return;
+    if (!cloudAuth || !isGoogleCredentials(cloudAuth)) return;
     set({ cloudStatus: 'syncing' });
     try {
       const papers = await listCloudPapers(cloudAuth);
@@ -643,7 +648,7 @@ export const useExamStore = create<ExamStoreState>((set, get) => ({
 
   loadPaperFromCloud: async (id) => {
     const { cloudAuth } = get();
-    if (!cloudAuth) return;
+    if (!cloudAuth || !isGoogleCredentials(cloudAuth)) return;
     set({ cloudStatus: 'syncing' });
     try {
       const paper = await loadCloudPaper(cloudAuth, id);

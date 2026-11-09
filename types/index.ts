@@ -158,4 +158,8 @@ export interface GoogleCredentials {
   accessToken: string;
   expiresAt: number; // epoch ms
   email: string;
+  // Milestone 11 GitHub PAT shape (still used by CloudAuthWidget):
+  token?: string;
+  username?: string;
+  repo?: string;
 }

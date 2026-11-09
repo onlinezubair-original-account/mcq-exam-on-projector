@@ -37,6 +37,7 @@ export function MetaScreen() {
   // One-time "now" default, matching source's single load-time assignment
   // (L1052-1053) rather than a live-updating clock.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!date) setDate(nowLocalForInput());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -52,6 +53,7 @@ export function MetaScreen() {
   // default course (L897-923).
   useEffect(() => {
     if (!courseList) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedCourse(null);
       return;
     }
@@ -59,7 +61,7 @@ export function MetaScreen() {
       if (prev && prev.semester === semesterNum) return prev;
       return defaultCourseFor(program, semesterNum);
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [courseList, program, semesterNum]);
 
   const showQuizNumber = examName === 'Class Quiz';

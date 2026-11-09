@@ -287,7 +287,7 @@ export function SetupScreen() {
           <div style={cloudBoxStyle}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
               <span style={{ color: 'var(--chalk-dim)' }}>
-                Signed in as <strong>{cloudAuth.email}</strong> — save this paper or load a previous one.
+                Signed in as <strong>{'email' in cloudAuth ? cloudAuth.email : cloudAuth.username}</strong> — save this paper or load a previous one.
               </span>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button

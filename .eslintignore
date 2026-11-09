@@ -1,0 +1,7 @@
+coverage/
+.next/
+out/
+dist/
+node_modules/
+*.bak
+*.bak-*
