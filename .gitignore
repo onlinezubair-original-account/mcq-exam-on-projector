@@ -40,3 +40,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .vitest-result.json
+
+# dsh acl backups/rollback artifacts
+.dsh-acl/
