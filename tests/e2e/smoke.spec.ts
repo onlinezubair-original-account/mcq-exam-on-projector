@@ -12,7 +12,7 @@ test.describe('Smoke test', () => {
     });
 
     await page.goto('/');
-    await expect(page.locator('h1')).toContainText(/Exam Meta/);
+    await expect(page.locator('h1')).toContainText(/Exam details/);
     await page.click('button:has-text("Skip")');
     await expect(page.locator('h1')).toContainText(/Setup/);
 
