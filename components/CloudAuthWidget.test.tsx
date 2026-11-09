@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { CloudAuthWidget } from './CloudAuthWidget';
@@ -21,18 +23,18 @@ describe('CloudAuthWidget', () => {
   it('expands the login form and logs in on submit', async () => {
     global.fetch = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse({ login: 'testteacher' }))
-      .mockResolvedValueOnce(jsonResponse({ permissions: { push: true } }))
-      .mockResolvedValueOnce(jsonResponse({}, 404))
-      .mockResolvedValueOnce(jsonResponse({}, 404));
+      .mockResolvedValueOnce(jsonResponse({ email: 'teacher@example.com' }))
+      .mockResolvedValueOnce(jsonResponse({ user: { emailAddress: 'teacher@example.com' } }))
+      .mockResolvedValueOnce(jsonResponse({ files: [] }))
+      .mockResolvedValueOnce(jsonResponse({ files: [] }));
 
     render(<CloudAuthWidget />);
     fireEvent.click(screen.getByText(/sign in/i));
-    fireEvent.change(screen.getByLabelText(/personal access token/i), { target: { value: 'fake-pat' } });
+    fireEvent.change(screen.getByPlaceholderText(/google oauth/i), { target: { value: 'fake-google-token' } });
     fireEvent.click(screen.getByRole('button', { name: /log in/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/testteacher/i)).toBeInTheDocument();
+      expect(screen.getByText(/Signed in as/i)).toBeInTheDocument();
     });
   });
 

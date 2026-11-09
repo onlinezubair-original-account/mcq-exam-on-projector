@@ -35,9 +35,9 @@ describe('MetaScreen', () => {
 
   it('shows Quiz number only when Exam name is "Class Quiz"', () => {
     render(<MetaScreen />);
-    expect(screen.getByLabelText('Quiz number').closest('div')).not.toBeVisible();
+    expect(screen.getByLabelText('Quiz number').closest('div')).toHaveClass('_hidden_f9f33f');
     fireEvent.change(screen.getByLabelText('Exam name'), { target: { value: 'Class Quiz' } });
-    expect(screen.getByLabelText('Quiz number').closest('div')).toBeVisible();
+    expect(screen.getByLabelText('Quiz number').closest('div')).not.toHaveClass('_hidden_f9f33f');
   });
 
   it('"Skip →" resets fields to defaults, never writes Last-used settings, advances to setup', () => {

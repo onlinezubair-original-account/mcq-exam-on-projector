@@ -93,7 +93,7 @@ export function CloudAuthWidget() {
             type="password"
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder="github_pat_..."
+            placeholder="Google OAuth access token..."
             style={{
               width: '100%', padding: '6px 8px', marginBottom: 8, borderRadius: 6,
               border: '1px solid var(--rule)', background: 'var(--board)', color: 'var(--chalk)',

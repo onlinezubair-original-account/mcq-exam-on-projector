@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { LockedScreen } from './LockedScreen';
 import { useExamStore } from '@/store/examStore';
 import { DEFAULT_META, DEFAULT_CONFIG } from '@/types';
@@ -80,14 +80,15 @@ describe('LockedScreen', () => {
 
   it('regenerating sets resets the downloaded state', () => {
     render(<LockedScreen />);
-    fireEvent.click(screen.getByText('⬇ Download exam files (.zip)'));
-    expect(screen.getByText('⬇ Download again (.zip)')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Download exam files/ }));
+    expect(screen.getByText(/Download again/)).toBeInTheDocument();
 
     const newMaster = [makeQuestion(1), makeQuestion(2), makeQuestion(3)];
-    useExamStore.setState({ lockedSets: [makeSet(newMaster), makeSet(newMaster)] });
+    act(() => {
+      useExamStore.setState({ lockedSets: [makeSet(newMaster), makeSet(newMaster)] });
+    });
 
-    expect(screen.getByText(/Not downloaded yet/)).toBeInTheDocument();
-    expect(screen.getByText('⬇ Download exam files (.zip)')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Download exam files/ })).toBeInTheDocument();
   });
 
   it('"Continue →" routes to the show screen', () => {

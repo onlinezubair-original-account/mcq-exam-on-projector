@@ -18,3 +18,23 @@
   - SUCCESS
   - no changes
   - None
+- 2026-11-09T18:17:51
+  - P0.3 Make every test run
+  - FAILED
+  - WROTE: components\CloudAuthWidget.test.tsx (added jsdom pragma); WROTE: hooks\useBeforeUnloadGuard.test.tsx (added jsdom pragma); WROTE: hooks\useKeyboardShortcuts.test.tsx (added jsdom pragma); WROTE: vitest.config.ts; TESTS: 103 passed / 13 failed / 116 total
+  - None
+- 2026-11-09T18:18:22
+  - P0.3 Make every test run
+  - FAILED
+  - WROTE: vitest.config.ts; TESTS: 103 passed / 13 failed / 116 total
+  - None
+- 2026-11-09T18:23:11
+  - P0.3 Make every test run
+  - FAILED
+  - WROTE: vitest.config.ts; TESTS: 113 passed / 3 failed / 116 total
+  - None
+- 2026-11-09T18:42:11
+  - P0.3 Make every test run
+  - FAILED
+  - WROTE: vitest.config.ts; TESTS: 114 passed / 2 failed / 116 total
+  - None
